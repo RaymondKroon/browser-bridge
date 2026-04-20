@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "CDT Bridge",
+  "version": "0.1.0",
+  "description": "Expose a curated CDP bridge for the current browser session through chrome.debugger and native messaging.",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "CDT Bridge",
+    "default_popup": "popup.html"
+  }
+}

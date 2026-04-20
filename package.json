@@ -1,0 +1,18 @@
+{
+  "name": "c-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MV3 extension + native messaging bridge that exposes a curated CDP endpoint for an already-running Chromium session.",
+  "scripts": {
+    "start:host": "node .\\native-host\\host.js",
+    "test": "node --test",
+    "test:agent-browser": "node --test .\\test\\agent-browser-smoke.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "agent-browser": "0.26.0"
+  }
+}

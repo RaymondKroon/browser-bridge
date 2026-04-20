@@ -1,0 +1,732 @@
+const HOST_NAME = "com.cdt_bridge";
+const DEBUGGER_VERSION = "1.3";
+const SUPPORTED_METHODS = new Set([
+  "Target.setAutoAttach",
+  "Page.enable",
+  "Page.navigate",
+  "Page.reload",
+  "Page.bringToFront",
+  "Runtime.enable",
+  "Runtime.evaluate",
+  "Runtime.runIfWaitingForDebugger",
+  "Accessibility.enable",
+  "Accessibility.getFullAXTree",
+  "Network.enable",
+  "Network.getCookies",
+  "Network.setCookies",
+  "Network.clearBrowserCookies",
+  "DOM.enable",
+  "DOM.getDocument",
+  "DOM.querySelectorAll",
+  "DOM.describeNode",
+  "DOM.resolveNode",
+  "DOM.getBoxModel",
+  "DOM.setFileInputFiles",
+  "Input.dispatchMouseEvent",
+  "Input.dispatchKeyEvent",
+  "Input.insertText",
+  "Log.enable",
+  "Overlay.highlightNode",
+  "Overlay.hideHighlight",
+  "Fetch.enable",
+  "Fetch.disable",
+  "Fetch.continueRequest",
+  "Fetch.failRequest",
+  "Fetch.fulfillRequest",
+  "Storage.getCookies",
+  "Storage.setCookies",
+  "Storage.clearDataForOrigin",
+  "Emulation.setDeviceMetricsOverride",
+  "Emulation.setEmulatedMedia",
+  "Emulation.setUserAgentOverride"
+]);
+const OPTIONAL_NOOP_METHODS = new Set([
+  "Runtime.runIfWaitingForDebugger",
+  "Target.setAutoAttach"
+]);
+const COMMAND_TIMEOUT_MS = 5000;
+
+const state = {
+  nativePort: null,
+  nativeConnected: false,
+  stoppingHost: false,
+  bridgeStatus: null,
+  lastError: null,
+  rootAttachments: new Map(),
+  sessions: new Map()
+};
+
+function createError(code, message, data = undefined) {
+  const error = new Error(message);
+  error.code = code;
+  error.data = data;
+  return error;
+}
+
+function serializeError(error) {
+  if (error && typeof error === "object" && "code" in error && "message" in error) {
+    return {
+      code: error.code,
+      message: error.message,
+      ...(error.data === undefined ? {} : { data: error.data })
+    };
+  }
+
+  return {
+    code: -32603,
+    message: error instanceof Error ? error.message : "Internal error"
+  };
+}
+
+function makePageTargetId(tabId) {
+  return `page:${tabId}`;
+}
+
+function parsePageTargetId(targetId) {
+  if (!targetId?.startsWith("page:")) {
+    return null;
+  }
+
+  const tabId = Number(targetId.slice("page:".length));
+  return Number.isInteger(tabId) ? tabId : null;
+}
+
+function makeRootSessionId() {
+  return `root-${crypto.randomUUID()}`;
+}
+
+function postNativeMessage(message) {
+  if (state.nativePort) {
+    state.nativePort.postMessage(message);
+  }
+}
+
+async function ensureNativePort() {
+  if (state.nativePort) {
+    await waitForBridgeStatus();
+    return state.nativePort;
+  }
+
+  state.stoppingHost = false;
+  const port = chrome.runtime.connectNative(HOST_NAME);
+  state.nativePort = port;
+  state.nativeConnected = true;
+  state.bridgeStatus = null;
+  state.lastError = null;
+
+  port.onMessage.addListener((message) => {
+    void handleNativeMessage(message);
+  });
+
+  port.onDisconnect.addListener(() => {
+    const wasStopping = state.stoppingHost;
+    state.stoppingHost = false;
+    state.nativeConnected = false;
+    state.nativePort = null;
+    state.bridgeStatus = null;
+    state.lastError = wasStopping
+      ? null
+      : chrome.runtime.lastError?.message ?? "Native host disconnected";
+  });
+
+  port.postMessage({
+    type: "hello",
+    version: "0.1.0"
+  });
+
+  await waitForBridgeStatus();
+  return port;
+}
+
+async function waitForBridgeStatus(timeoutMs = 5000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    if (state.bridgeStatus) {
+      return state.bridgeStatus;
+    }
+
+    if (!state.nativePort) {
+      throw createError(-32000, state.lastError ?? "Native host not connected");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  throw createError(-32000, "Timed out waiting for bridge startup");
+}
+
+async function disconnectDebuggerSessions() {
+  for (const [tabId] of state.rootAttachments) {
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch {
+      // Ignore detach races for tabs already closed or detached.
+    }
+  }
+
+  state.rootAttachments.clear();
+  state.sessions.clear();
+  state.lastError = null;
+
+  return {
+    connected: Boolean(state.bridgeStatus),
+    detached: true
+  };
+}
+
+async function stopHost() {
+  await disconnectDebuggerSessions();
+
+  if (!state.nativePort) {
+    state.nativeConnected = false;
+    state.stoppingHost = false;
+    state.bridgeStatus = null;
+    state.lastError = null;
+    return { connected: false, stopped: true };
+  }
+
+  const port = state.nativePort;
+  state.stoppingHost = true;
+  state.nativePort = null;
+  state.nativeConnected = false;
+  state.bridgeStatus = null;
+  state.lastError = null;
+
+  try {
+    port.disconnect();
+  } catch {
+    // Ignore disconnect races.
+  }
+
+  return { connected: false, stopped: true };
+}
+
+async function listTargets() {
+  const tabs = await chrome.tabs.query({});
+  return tabs
+    .filter((tab) => typeof tab.id === "number")
+    .sort(compareTabsForDiscovery)
+    .map((tab) => buildTargetInfo(tab));
+}
+
+function buildTargetInfo(tab) {
+  return {
+    targetId: makePageTargetId(tab.id),
+    tabId: tab.id,
+    type: classifyTargetType(tab.url),
+    title: tab.title ?? "",
+    url: tab.url ?? "about:blank",
+    attached: state.rootAttachments.has(tab.id),
+    faviconUrl: tab.favIconUrl ?? undefined
+  };
+}
+
+function classifyTargetType(url) {
+  if (!url || url === "about:blank" || url === "about:srcdoc") {
+    return "page";
+  }
+
+  const internalPrefixes = [
+    "chrome://",
+    "chrome-extension://",
+    "devtools://",
+    "edge://",
+    "extension://",
+    "about:newtab",
+    "view-source:"
+  ];
+
+  return internalPrefixes.some((prefix) => url.startsWith(prefix)) ? "other" : "page";
+}
+
+function compareTabsForDiscovery(left, right) {
+  if (Boolean(left.active) !== Boolean(right.active)) {
+    return left.active ? -1 : 1;
+  }
+
+  const leftFocused = left.windowId === chrome.windows.WINDOW_ID_CURRENT;
+  const rightFocused = right.windowId === chrome.windows.WINDOW_ID_CURRENT;
+  if (leftFocused !== rightFocused) {
+    return leftFocused ? -1 : 1;
+  }
+
+  if ((left.windowId ?? 0) !== (right.windowId ?? 0)) {
+    return (left.windowId ?? 0) - (right.windowId ?? 0);
+  }
+
+  return (left.index ?? 0) - (right.index ?? 0);
+}
+
+async function ensureDebuggerAttached(tabId) {
+  if (state.rootAttachments.has(tabId)) {
+    return state.rootAttachments.get(tabId);
+  }
+
+  await chrome.debugger.attach({ tabId }, DEBUGGER_VERSION);
+
+  const attachment = {
+    tabId,
+    targetId: makePageTargetId(tabId),
+    rootSessions: new Set(),
+    childSessions: new Set()
+  };
+
+  state.rootAttachments.set(tabId, attachment);
+
+  try {
+    await chrome.debugger.sendCommand(
+      { tabId },
+      "Target.setAutoAttach",
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true
+      }
+    );
+  } catch {
+    // Not every Chrome/Edge build will accept this before attach flows are fully active.
+  }
+
+  return attachment;
+}
+
+function lookupSession(sessionId) {
+  const session = state.sessions.get(sessionId);
+  if (!session) {
+    throw createError(-32000, "Unknown session", { sessionId });
+  }
+  return session;
+}
+
+function removeSession(sessionId) {
+  const session = state.sessions.get(sessionId);
+  if (!session) {
+    return;
+  }
+
+  state.sessions.delete(sessionId);
+
+  const attachment = state.rootAttachments.get(session.tabId);
+  if (!attachment) {
+    return;
+  }
+
+  if (session.root) {
+    attachment.rootSessions.delete(sessionId);
+  } else {
+    attachment.childSessions.delete(sessionId);
+  }
+}
+
+async function cleanupTabAttachment(tabId) {
+  const attachment = state.rootAttachments.get(tabId);
+  if (!attachment) {
+    return;
+  }
+
+  if (attachment.rootSessions.size > 0 || attachment.childSessions.size > 0) {
+    return;
+  }
+
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch {
+    // Ignore detach races for tabs that already closed.
+  }
+
+  state.rootAttachments.delete(tabId);
+}
+
+async function attachTarget(targetId) {
+  const tabId = parsePageTargetId(targetId);
+  if (!Number.isInteger(tabId)) {
+    throw createError(-32602, "Only page targets are supported for top-level attach", {
+      targetId
+    });
+  }
+
+  const sessionId = makeRootSessionId();
+  state.sessions.set(sessionId, { tabId, targetId, root: true });
+  return { sessionId, targetId, tabId };
+}
+
+async function ensureRootSessionAttached(sessionId) {
+  const session = lookupSession(sessionId);
+  if (!session.root) {
+    return session;
+  }
+
+  const attachment = await ensureDebuggerAttached(session.tabId);
+  attachment.rootSessions.add(sessionId);
+  return session;
+}
+
+async function detachTarget({ sessionId, targetId }) {
+  if (sessionId) {
+    const session = lookupSession(sessionId);
+    if (session.root) {
+      removeSession(sessionId);
+      await cleanupTabAttachment(session.tabId);
+      return {};
+    }
+
+    await chrome.debugger.sendCommand(
+      { tabId: session.tabId },
+      "Target.detachFromTarget",
+      { sessionId }
+    );
+    removeSession(sessionId);
+    await cleanupTabAttachment(session.tabId);
+    return {};
+  }
+
+  const tabId = parsePageTargetId(targetId);
+  if (!Number.isInteger(tabId)) {
+    throw createError(-32602, "detach requires sessionId or page targetId");
+  }
+
+  for (const [existingSessionId, session] of state.sessions.entries()) {
+    if (session.tabId === tabId) {
+      state.sessions.delete(existingSessionId);
+    }
+  }
+
+  state.rootAttachments.delete(tabId);
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch {
+    // Ignore detach races when the tab disappeared.
+  }
+
+  return {};
+}
+
+async function resolveDebuggee({ targetId, sessionId }) {
+  if (sessionId) {
+    const session = await ensureRootSessionAttached(sessionId);
+    return {
+      tabId: session.tabId,
+      debuggee: session.root ? { tabId: session.tabId } : { tabId: session.tabId, sessionId },
+      targetId: session.targetId
+    };
+  }
+
+  const tabId = parsePageTargetId(targetId);
+  if (!Number.isInteger(tabId)) {
+    throw createError(-32602, "sendCommand requires a known sessionId or page targetId");
+  }
+
+  await ensureDebuggerAttached(tabId);
+  return {
+    tabId,
+    debuggee: { tabId },
+    targetId
+  };
+}
+
+async function sendDebuggerCommand(debuggee, method, params) {
+  return await Promise.race([
+    chrome.debugger.sendCommand(debuggee, method, params),
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(
+          createError(-32000, "Debugger command timed out", {
+            method,
+            debuggee
+          })
+        );
+      }, COMMAND_TIMEOUT_MS);
+    })
+  ]);
+}
+
+async function sendCommand(payload) {
+  if (!SUPPORTED_METHODS.has(payload.method)) {
+    throw createError(-32601, "Method not supported", {
+      method: payload.method
+    });
+  }
+
+  const { tabId, debuggee, targetId } = await resolveDebuggee(payload);
+  if (OPTIONAL_NOOP_METHODS.has(payload.method)) {
+    return {};
+  }
+
+  const result = await sendDebuggerCommand(debuggee, payload.method, payload.params ?? {});
+
+  if (payload.method === "Target.attachToTarget" && result?.sessionId) {
+    const attachment = state.rootAttachments.get(tabId);
+    if (attachment) {
+      attachment.childSessions.add(result.sessionId);
+      state.sessions.set(result.sessionId, {
+        tabId,
+        targetId: payload.params?.targetId ?? targetId,
+        root: false
+      });
+    }
+  }
+
+  if (payload.method === "Target.detachFromTarget" && payload.params?.sessionId) {
+    removeSession(payload.params.sessionId);
+    await cleanupTabAttachment(tabId);
+  }
+
+  return result ?? {};
+}
+
+async function createTarget(url) {
+  const tab = await chrome.tabs.create({
+    url: url || "about:blank",
+    active: true
+  });
+
+  if (typeof tab.id !== "number") {
+    throw createError(-32603, "Browser did not return a tab id");
+  }
+
+  return { targetId: makePageTargetId(tab.id), tabId: tab.id };
+}
+
+async function activateTarget(targetId) {
+  const tabId = parsePageTargetId(targetId);
+  if (!Number.isInteger(tabId)) {
+    throw createError(-32602, "Target.activateTarget requires a page targetId");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await chrome.tabs.update(tabId, { active: true });
+  if (tab.windowId !== chrome.windows.WINDOW_ID_NONE) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+  return {};
+}
+
+async function closeTarget(targetId) {
+  const tabId = parsePageTargetId(targetId);
+  if (!Number.isInteger(tabId)) {
+    throw createError(-32602, "Target.closeTarget requires a page targetId");
+  }
+
+  await chrome.tabs.remove(tabId);
+  return { success: true };
+}
+
+async function getDiagnostics() {
+  return {
+    extensionVersion: chrome.runtime.getManifest().version,
+    browserVersion: navigator.userAgent,
+    userAgent: navigator.userAgent,
+    jsVersion: navigator.userAgent,
+    attachedTabs: [...state.rootAttachments.keys()],
+    bridgeStatus: state.bridgeStatus,
+    lastError: state.lastError
+  };
+}
+
+function getCapabilities() {
+  return {
+    protocolVersion: "1.3",
+    methods: [...SUPPORTED_METHODS].sort()
+  };
+}
+
+async function handleNativeRequest(message) {
+  switch (message.action) {
+    case "ping":
+      return { ok: true };
+    case "listTargets":
+      return await listTargets();
+    case "attach":
+      return await attachTarget(message.payload.targetId);
+    case "detach":
+      return await detachTarget(message.payload);
+    case "sendCommand":
+      return await sendCommand(message.payload);
+    case "createTarget":
+      return await createTarget(message.payload.url);
+    case "activateTarget":
+      return await activateTarget(message.payload.targetId);
+    case "closeTarget":
+      return await closeTarget(message.payload.targetId);
+    case "getDiagnostics":
+      return await getDiagnostics();
+    case "getCapabilities":
+      return getCapabilities();
+    default:
+      throw createError(-32601, "Unknown native host action", {
+        action: message.action
+      });
+  }
+}
+
+async function handleNativeMessage(message) {
+  if (message.type === "event") {
+    if (message.event === "bridgeStatus") {
+      state.bridgeStatus = message.payload;
+    }
+    return;
+  }
+
+  if (message.type !== "request") {
+    return;
+  }
+
+  try {
+    const result = await handleNativeRequest(message);
+    postNativeMessage({
+      type: "response",
+      requestId: message.requestId,
+      ok: true,
+      result
+    });
+  } catch (error) {
+    state.lastError = error.message;
+    postNativeMessage({
+      type: "response",
+      requestId: message.requestId,
+      ok: false,
+      error: serializeError(error)
+    });
+  }
+}
+
+function emitNativeEvent(payload) {
+  postNativeMessage({
+    type: "event",
+    payload
+  });
+}
+
+function emitTargetLifecycle(type, targetInfoOrId) {
+  if (!state.nativePort) {
+    return;
+  }
+
+  if (type === "targetDestroyed") {
+    emitNativeEvent({ type, targetId: targetInfoOrId });
+  } else {
+    emitNativeEvent({ type, targetInfo: targetInfoOrId });
+  }
+}
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (typeof source.tabId !== "number") {
+    return;
+  }
+
+  const targetId = makePageTargetId(source.tabId);
+
+  if (method === "Target.attachedToTarget" && params?.sessionId) {
+    const attachment = state.rootAttachments.get(source.tabId);
+    attachment?.childSessions.add(params.sessionId);
+    state.sessions.set(params.sessionId, {
+      tabId: source.tabId,
+      targetId: params.targetInfo?.targetId ?? targetId,
+      root: false
+    });
+  }
+
+  if (method === "Target.detachedFromTarget" && params?.sessionId) {
+    removeSession(params.sessionId);
+    void cleanupTabAttachment(source.tabId);
+  }
+
+  emitNativeEvent({
+    type: "cdpEvent",
+    tabId: source.tabId,
+    targetId,
+    sessionId: source.sessionId,
+    method,
+    params
+  });
+});
+
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (typeof source.tabId !== "number") {
+    return;
+  }
+
+  for (const [sessionId, session] of state.sessions.entries()) {
+    if (session.tabId === source.tabId) {
+      state.sessions.delete(sessionId);
+    }
+  }
+
+  state.rootAttachments.delete(source.tabId);
+  state.lastError = `Debugger detached from tab ${source.tabId}: ${reason}`;
+});
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (typeof tab.id === "number") {
+    emitTargetLifecycle("targetCreated", buildTargetInfo(tab));
+  }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
+  emitTargetLifecycle(
+    "targetInfoChanged",
+    buildTargetInfo({
+      ...tab,
+      id: tabId
+    })
+  );
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  emitTargetLifecycle("targetDestroyed", makePageTargetId(tabId));
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  void (async () => {
+    try {
+      switch (message?.action) {
+        case "connect-host":
+        case "start-host":
+          state.lastError = null;
+          await ensureNativePort();
+          sendResponse({ ok: true, state: await getDiagnostics(), capabilities: getCapabilities() });
+          return;
+        case "disconnect-host":
+          sendResponse({
+            ok: true,
+            result: await disconnectDebuggerSessions(),
+            state: await getDiagnostics()
+          });
+          return;
+        case "stop-host":
+          sendResponse({
+            ok: true,
+            result: await stopHost(),
+            state: await getDiagnostics()
+          });
+          return;
+        case "get-state":
+          sendResponse({
+            ok: true,
+            state: await getDiagnostics(),
+            bridgeStatus: state.bridgeStatus,
+            capabilities: getCapabilities(),
+            targets: await listTargets()
+          });
+          return;
+        case "refresh-targets":
+          sendResponse({ ok: true, targets: await listTargets() });
+          return;
+        default:
+          sendResponse({
+            ok: false,
+            error: serializeError(createError(-32601, "Unknown popup action"))
+          });
+      }
+    } catch (error) {
+      sendResponse({ ok: false, error: serializeError(error) });
+    }
+  })();
+
+  return true;
+});
+
+void ensureNativePort().catch((error) => {
+  state.lastError = error.message;
+});

@@ -1,0 +1,9 @@
+{
+  "name": "com.cdt_bridge",
+  "description": "CDT Extension Native Messaging Host",
+  "path": "C:\\path\\to\\CDT-bridge\\native-host\\launch-host.cmd",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}
