@@ -10,6 +10,15 @@ async function readJson(url) {
   return await response.json();
 }
 
+async function waitForClose(ws, timeoutMs = 2000) {
+  return await Promise.race([
+    once(ws, "close"),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Timed out waiting for websocket close after ${timeoutMs}ms`)), timeoutMs);
+    })
+  ]);
+}
+
 test("bridge exposes discovery endpoints and browser websocket", async () => {
   const transport = new FakeExtensionTransport();
   const bridge = new CdpBridgeServer({ transport, port: 0 });
@@ -42,4 +51,50 @@ test("bridge exposes discovery endpoints and browser websocket", async () => {
   } finally {
     await bridge.stop();
   }
+});
+
+test("bridge page websocket supports snapshot-like commands without a stored session", async () => {
+  const transport = new FakeExtensionTransport();
+  const bridge = new CdpBridgeServer({ transport, port: 0 });
+  await bridge.start();
+
+  try {
+    const targets = await readJson(`${bridge.httpBaseUrl}/json/list`);
+    const pageTarget = targets.find((target) => target.targetId === "page:1");
+    assert.ok(pageTarget?.webSocketDebuggerUrl, "expected page websocket URL");
+
+    const ws = new WebSocket(pageTarget.webSocketDebuggerUrl);
+    await once(ws, "open");
+
+    ws.send(JSON.stringify({ id: 1, method: "Accessibility.getFullAXTree" }));
+    const [rawTree] = await once(ws, "message");
+    const treeMessage = JSON.parse(rawTree.toString());
+    assert.equal(treeMessage.id, 1);
+    assert.match(JSON.stringify(treeMessage.result.nodes), /RootWebArea|Search/);
+
+    ws.send(JSON.stringify({ id: 2, method: "Runtime.evaluate", params: { expression: "document.title" } }));
+    const [rawEval] = await once(ws, "message");
+    const evalMessage = JSON.parse(rawEval.toString());
+    assert.equal(evalMessage.id, 2);
+    assert.equal(evalMessage.result.result.value, "Fake Page");
+
+    ws.close();
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test("bridge stop closes active websocket clients promptly", async () => {
+  const transport = new FakeExtensionTransport();
+  const bridge = new CdpBridgeServer({ transport, port: 0 });
+  await bridge.start();
+
+  const ws = new WebSocket(bridge.browserWebSocketUrl);
+  await once(ws, "open");
+
+  ws.send(JSON.stringify({ id: 1, method: "Browser.getVersion" }));
+  await once(ws, "message");
+
+  await bridge.stop();
+  await waitForClose(ws);
 });

@@ -45,6 +45,13 @@ const OPTIONAL_NOOP_METHODS = new Set([
   "Target.setAutoAttach"
 ]);
 const COMMAND_TIMEOUT_MS = 5000;
+const ACTION_ICON_SIZES = [16, 32];
+const ACTION_COLORS = {
+  connected: "#16a34a",
+  disconnected: "#6b7280",
+  alert: "#dc2626",
+  foreground: "#f9fafb"
+};
 
 const state = {
   nativePort: null,
@@ -53,7 +60,8 @@ const state = {
   bridgeStatus: null,
   lastError: null,
   rootAttachments: new Map(),
-  sessions: new Map()
+  sessions: new Map(),
+  expectedDetachTabs: new Set()
 };
 
 function createError(code, message, data = undefined) {
@@ -101,6 +109,99 @@ function postNativeMessage(message) {
   }
 }
 
+function isBridgeConnected() {
+  return Boolean(state.bridgeStatus?.connected ?? state.bridgeStatus);
+}
+
+function drawActionIcon(size, connected) {
+  const canvas = new OffscreenCanvas(size, size);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Could not draw action icon");
+  }
+
+  const strokeWidth = Math.max(2, Math.round(size / 8));
+  const nodeRadius = Math.max(2.5, size / 5);
+  const centerY = size / 2;
+  const leftX = size * 0.28;
+  const rightX = size * 0.72;
+
+  context.clearRect(0, 0, size, size);
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.strokeStyle = connected ? ACTION_COLORS.connected : ACTION_COLORS.disconnected;
+  context.fillStyle = ACTION_COLORS.foreground;
+  context.lineWidth = strokeWidth;
+
+  context.beginPath();
+  context.arc(leftX, centerY, nodeRadius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+
+  context.beginPath();
+  context.arc(rightX, centerY, nodeRadius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+
+  context.beginPath();
+  context.moveTo(leftX + nodeRadius + strokeWidth / 2, centerY);
+  if (connected) {
+    context.lineTo(rightX - nodeRadius - strokeWidth / 2, centerY);
+  } else {
+    const gap = Math.max(1.5, size / 10);
+    context.lineTo(size / 2 - gap, centerY);
+    context.moveTo(size / 2 + gap, centerY);
+    context.lineTo(rightX - nodeRadius - strokeWidth / 2, centerY);
+  }
+  context.stroke();
+
+  if (!connected) {
+    context.strokeStyle = ACTION_COLORS.alert;
+    context.lineWidth = Math.max(2, Math.round(size / 7));
+    context.beginPath();
+    context.moveTo(size * 0.32, size * 0.72);
+    context.lineTo(size * 0.68, size * 0.28);
+    context.stroke();
+  }
+
+  return context.getImageData(0, 0, size, size);
+}
+
+async function updateActionState() {
+  const connected = isBridgeConnected();
+  const imageData = Object.fromEntries(
+    ACTION_ICON_SIZES.map((size) => [size, drawActionIcon(size, connected)])
+  );
+  const badgeText = connected ? "ON" : "OFF";
+  const badgeColor = connected ? ACTION_COLORS.connected : ACTION_COLORS.alert;
+  const title = connected
+    ? `CDT Bridge connected (${state.bridgeStatus?.httpBaseUrl ?? "local bridge"})`
+    : "CDT Bridge disconnected";
+
+  await Promise.all([
+    chrome.action.setIcon({ imageData }),
+    chrome.action.setBadgeText({ text: badgeText }),
+    chrome.action.setBadgeBackgroundColor({ color: badgeColor }),
+    chrome.action.setTitle({ title })
+  ]);
+}
+
+function refreshActionState() {
+  void updateActionState().catch((error) => {
+    console.error("Failed to update action state", error);
+  });
+}
+
+async function detachDebuggerTab(tabId) {
+  state.expectedDetachTabs.add(tabId);
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch (error) {
+    state.expectedDetachTabs.delete(tabId);
+    throw error;
+  }
+}
+
 async function ensureNativePort() {
   if (state.nativePort) {
     await waitForBridgeStatus();
@@ -113,6 +214,7 @@ async function ensureNativePort() {
   state.nativeConnected = true;
   state.bridgeStatus = null;
   state.lastError = null;
+  refreshActionState();
 
   port.onMessage.addListener((message) => {
     void handleNativeMessage(message);
@@ -127,6 +229,7 @@ async function ensureNativePort() {
     state.lastError = wasStopping
       ? null
       : chrome.runtime.lastError?.message ?? "Native host disconnected";
+    refreshActionState();
   });
 
   port.postMessage({
@@ -159,7 +262,7 @@ async function waitForBridgeStatus(timeoutMs = 5000) {
 async function disconnectDebuggerSessions() {
   for (const [tabId] of state.rootAttachments) {
     try {
-      await chrome.debugger.detach({ tabId });
+      await detachDebuggerTab(tabId);
     } catch {
       // Ignore detach races for tabs already closed or detached.
     }
@@ -175,14 +278,18 @@ async function disconnectDebuggerSessions() {
   };
 }
 
-async function stopHost() {
+async function stopHost({ clearLastError = true } = {}) {
+  state.stoppingHost = true;
   await disconnectDebuggerSessions();
 
   if (!state.nativePort) {
     state.nativeConnected = false;
     state.stoppingHost = false;
     state.bridgeStatus = null;
-    state.lastError = null;
+    if (clearLastError) {
+      state.lastError = null;
+    }
+    refreshActionState();
     return { connected: false, stopped: true };
   }
 
@@ -191,7 +298,10 @@ async function stopHost() {
   state.nativePort = null;
   state.nativeConnected = false;
   state.bridgeStatus = null;
-  state.lastError = null;
+  if (clearLastError) {
+    state.lastError = null;
+  }
+  refreshActionState();
 
   try {
     port.disconnect();
@@ -330,7 +440,7 @@ async function cleanupTabAttachment(tabId) {
   }
 
   try {
-    await chrome.debugger.detach({ tabId });
+    await detachDebuggerTab(tabId);
   } catch {
     // Ignore detach races for tabs that already closed.
   }
@@ -394,7 +504,7 @@ async function detachTarget({ sessionId, targetId }) {
 
   state.rootAttachments.delete(tabId);
   try {
-    await chrome.debugger.detach({ tabId });
+    await detachDebuggerTab(tabId);
   } catch {
     // Ignore detach races when the tab disappeared.
   }
@@ -564,6 +674,7 @@ async function handleNativeMessage(message) {
   if (message.type === "event") {
     if (message.event === "bridgeStatus") {
       state.bridgeStatus = message.payload;
+      refreshActionState();
     }
     return;
   }
@@ -647,6 +758,8 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     return;
   }
 
+  const wasExpected = state.expectedDetachTabs.delete(source.tabId);
+
   for (const [sessionId, session] of state.sessions.entries()) {
     if (session.tabId === source.tabId) {
       state.sessions.delete(sessionId);
@@ -655,6 +768,13 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
   state.rootAttachments.delete(source.tabId);
   state.lastError = `Debugger detached from tab ${source.tabId}: ${reason}`;
+
+  if (!wasExpected && state.nativePort) {
+    void stopHost({ clearLastError: false });
+    return;
+  }
+
+  refreshActionState();
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
@@ -729,4 +849,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 void ensureNativePort().catch((error) => {
   state.lastError = error.message;
+  refreshActionState();
 });
+
+refreshActionState();

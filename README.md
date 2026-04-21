@@ -60,6 +60,20 @@ agent-browser --cdp 9223 eval "document.title"
 agent-browser --cdp ws://127.0.0.1:9223/devtools/browser tab list
 ```
 
+If `agent-browser doctor`, `tab list`, or `snapshot` hangs, repair its stale daemon sidecar files first:
+
+```powershell
+npm run repair:agent-browser
+```
+
+If you know no healthy `agent-browser` daemon should be running, force-reset all daemon sidecars:
+
+```powershell
+npm run repair:agent-browser:force
+```
+
+The repair command removes stale `*.pid`, `*.port`, and `*.stream` files from `~\.agent-browser` so the next raw `agent-browser` command can start cleanly.
+
 `agent-browser` expects a browser-level CDP websocket. The bridge therefore exposes:
 
 - `GET /json/version`
