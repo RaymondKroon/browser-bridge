@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { rm, mkdtemp } from "node:fs/promises";
+import { rm, mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { CdpBridgeServer } from "../src/bridge/cdp-bridge-server.js";
@@ -309,6 +309,93 @@ test("agent-browser can highlight a snapshot reference", { timeout: 20000 }, asy
     } finally {
       await cleanupAgentBrowser(sessionName, env);
       await bridge.stop();
+    }
+  });
+});
+
+test("agent-browser can save a trace through the bridge", { timeout: 30000 }, async (t) => {
+  await withAgentBrowserEnv(async (env) => {
+    const transport = new FakeExtensionTransport();
+    const bridge = new CdpBridgeServer({ transport, port: 0 });
+    const sessionName = `bridge-trace-${Date.now()}`;
+    const traceDir = await mkdtemp(path.join(tmpdir(), "cdt-trace-output-"));
+    const tracePath = path.join(traceDir, "bridge-trace.zip");
+    await bridge.start();
+
+    try {
+      await cleanupAgentBrowser(sessionName, env);
+      const result = await runAgentBrowser(
+        ["--session", sessionName, "--cdp", `${bridge.port}`, "batch", "trace start", `trace stop ${tracePath}`],
+        { timeoutMs: 20000, env }
+      );
+      if (!assertAgentBrowserSuccess(t, result)) {
+        return;
+      }
+
+      const info = await stat(tracePath);
+      assert.ok(info.size > 0, "expected trace output to be written");
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Tracing.start"),
+        "expected agent-browser to call Tracing.start"
+      );
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Tracing.end"),
+        "expected agent-browser to call Tracing.end"
+      );
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "IO.read"),
+        "expected agent-browser to call IO.read"
+      );
+    } finally {
+      await cleanupAgentBrowser(sessionName, env);
+      await bridge.stop();
+      await rm(traceDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("agent-browser can save a performance profile through the bridge", { timeout: 30000 }, async (t) => {
+  await withAgentBrowserEnv(async (env) => {
+    const transport = new FakeExtensionTransport();
+    const bridge = new CdpBridgeServer({ transport, port: 0 });
+    const sessionName = `bridge-profile-${Date.now()}`;
+    const profileDir = await mkdtemp(path.join(tmpdir(), "cdt-profile-output-"));
+    const profilePath = path.join(profileDir, "bridge.cpuprofile");
+    await bridge.start();
+
+    try {
+      await cleanupAgentBrowser(sessionName, env);
+      const result = await runAgentBrowser(
+        [
+          "--session",
+          sessionName,
+          "--cdp",
+          `${bridge.port}`,
+          "batch",
+          "open https://example.com",
+          "profiler start",
+          `profiler stop ${profilePath}`
+        ],
+        { timeoutMs: 20000, env }
+      );
+      if (!assertAgentBrowserSuccess(t, result)) {
+        return;
+      }
+
+      const info = await stat(profilePath);
+      assert.ok(info.size > 0, "expected profile output to be written");
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Tracing.start"),
+        "expected profiler flow to call Tracing.start"
+      );
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Tracing.end"),
+        "expected profiler flow to call Tracing.end"
+      );
+    } finally {
+      await cleanupAgentBrowser(sessionName, env);
+      await bridge.stop();
+      await rm(profileDir, { recursive: true, force: true });
     }
   });
 });

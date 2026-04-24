@@ -20,6 +20,9 @@ export class FakeExtensionTransport extends EventEmitter {
     this.sessions = new Map();
     this.cookies = [];
     this.commandLog = [];
+    this.ioStreams = new Map();
+    this.traceSequence = 0;
+    this.tracingState = null;
   }
 
   async request(action, payload) {
@@ -116,9 +119,35 @@ export class FakeExtensionTransport extends EventEmitter {
       case "Fetch.continueWithAuth":
       case "Profiler.start":
       case "Security.setIgnoreCertificateErrors":
-      case "Tracing.start":
-      case "Tracing.end":
         return {};
+      case "Tracing.start":
+        this.tracingState = {
+          categories: params?.categories ?? "",
+          sessionId,
+          targetId
+        };
+        return {};
+      case "Tracing.end": {
+        const stream = `trace-stream-${++this.traceSequence}`;
+        this.ioStreams.set(stream, {
+          data: this.buildTracePayload(),
+          offset: 0
+        });
+        queueMicrotask(() => {
+          this.emit("event", {
+            type: "cdpEvent",
+            targetId,
+            sessionId: this.tracingState?.sessionId ?? sessionId,
+            method: "Tracing.tracingComplete",
+            params: {
+              dataLossOccurred: false,
+              stream
+            }
+          });
+        });
+        this.tracingState = null;
+        return {};
+      }
       case "Page.captureScreenshot":
         return {
           data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnR4V8AAAAASUVORK5CYII="
@@ -247,12 +276,13 @@ export class FakeExtensionTransport extends EventEmitter {
           this.cookies = this.cookies.filter((cookie) => !this.cookieMatchesOrigin(cookie, params.origin));
         }
         return {};
+      case "IO.close":
+        if (params?.handle) {
+          this.ioStreams.delete(params.handle);
+        }
+        return {};
       case "IO.read":
-        return {
-          data: "",
-          base64Encoded: false,
-          eof: true
-        };
+        return this.readStream(params?.handle);
       case "Profiler.stop":
         return {
           profile: {
@@ -396,5 +426,45 @@ export class FakeExtensionTransport extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  buildTracePayload() {
+    return JSON.stringify({
+      traceEvents: [
+        {
+          pid: 1,
+          tid: 1,
+          ts: 0,
+          ph: "M",
+          cat: "__metadata",
+          name: "process_name",
+          args: {
+            name: "Fake Renderer"
+          }
+        }
+      ],
+      metadata: {
+        source: "fake-extension-transport"
+      }
+    });
+  }
+
+  readStream(handle) {
+    const stream = this.ioStreams.get(handle);
+    if (!stream) {
+      return {
+        data: "",
+        base64Encoded: false,
+        eof: true
+      };
+    }
+
+    const data = stream.data.slice(stream.offset);
+    stream.offset = stream.data.length;
+    return {
+      data,
+      base64Encoded: false,
+      eof: true
+    };
   }
 }

@@ -50,6 +50,7 @@ const SUPPORTED_METHODS = new Set([
   "Fetch.continueRequest",
   "Fetch.failRequest",
   "Fetch.fulfillRequest",
+  "IO.close",
   "IO.read",
   "Profiler.start",
   "Profiler.stop",
