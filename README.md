@@ -1,13 +1,13 @@
 # CDT bridge
 
-Windows-first proof of concept for reusing an already-running Chrome or Edge session through an MV3 extension, a native messaging host, and a local CDP-compatible bridge that `agent-browser` can connect to.
+Proof of concept for reusing an already-running Chrome, Chromium, or Edge session through an MV3 extension, a native messaging host, and a local CDP-compatible bridge that `agent-browser` can connect to.
 
 ## What ships
 
 1. `extension/` - unpacked MV3 extension with a service worker and popup UI.
-2. `native-host/` - native messaging entrypoint plus a Windows launcher.
+2. `native-host/` - native messaging entrypoint plus Windows and Linux launchers.
 3. `src/` - shared Node-side bridge and host implementation.
-4. `scripts/register-native-host.ps1` - registers the native host manifest for Chrome and/or Edge.
+4. `scripts/register-native-host.ps1` and `scripts/register-native-host.sh` - register the native host manifest on Windows and Linux.
 5. `test/` - protocol tests plus an `agent-browser` smoke test that runs against a fake extension transport.
 
 ## Supported v1 surface
@@ -34,30 +34,42 @@ Unsupported methods return a structured JSON-RPC/CDP-style error with code `-326
 
 1. Install dependencies:
 
-   ```powershell
+   ```bash
    npm install
    ```
 
-2. Load `extension\` as an unpacked extension in Chrome or Edge.
+2. Load `extension/` as an unpacked extension in Chrome, Chromium, or Edge.
 
 3. Copy the extension ID from the browser's extensions page.
 
-4. Register the native host:
+4. Register the native host.
+
+   On Windows:
 
    ```powershell
    .\scripts\register-native-host.ps1 -ExtensionId <your-extension-id> -Browser Both
    ```
 
-5. Open the extension popup and confirm the bridge status shows a local URL such as `http://127.0.0.1:9223`.
+   On Linux:
+
+   ```bash
+   ./scripts/register-native-host.sh --extension-id <your-extension-id> --browser all
+   ```
+
+   The Linux script writes the manifest into the standard per-user native messaging directories for Chrome (`~/.config/google-chrome`), Chromium (`~/.config/chromium`), and Edge (`~/.config/microsoft-edge`).
+
+5. Open the extension popup and confirm the bridge status shows a local URL such as `http://127.0.0.1:<bridge-port>`.
+
+   The native host picks an available loopback port by default so it does not collide with a browser's own remote-debugging port. If you need a fixed port, set `CDT_BRIDGE_PORT` before starting the host; if that port is busy, the host falls back to a free local port.
 
 ## Use with agent-browser
 
-Point `agent-browser` at the bridge port or browser websocket URL:
+Point `agent-browser` at the bridge URL reported by the extension popup or toolbar action, not a hardcoded remote-debugging port:
 
-```powershell
-agent-browser --cdp 9223 tab list
-agent-browser --cdp 9223 eval "document.title"
-agent-browser --cdp ws://127.0.0.1:9223/devtools/browser tab list
+```bash
+agent-browser --cdp <bridge-port-from-popup> tab list
+agent-browser --cdp <bridge-port-from-popup> eval "document.title"
+agent-browser --cdp ws://127.0.0.1:<bridge-port-from-popup>/devtools/browser tab list
 ```
 
 If `agent-browser doctor`, `tab list`, or `snapshot` hangs, repair its stale daemon sidecar files first:
