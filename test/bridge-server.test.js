@@ -5,9 +5,13 @@ import { WebSocket } from "ws";
 import { CdpBridgeServer } from "../src/bridge/cdp-bridge-server.js";
 import { FakeExtensionTransport } from "./fake-extension-transport.js";
 
-async function readJson(url) {
-  const response = await fetch(url);
+async function readJson(url, options) {
+  const response = await fetch(url, options);
   return await response.json();
+}
+
+async function readResponse(url, options) {
+  return await fetch(url, options);
 }
 
 async function waitForClose(ws, timeoutMs = 2000) {
@@ -29,8 +33,26 @@ test("bridge exposes discovery endpoints and browser websocket", async () => {
     assert.equal(version.webSocketDebuggerUrl, bridge.browserWebSocketUrl);
 
     const list = await readJson(`${bridge.httpBaseUrl}/json/list`);
-    assert.equal(list[0].type, "browser");
-    assert.ok(list.some((target) => target.targetId === "page:1"));
+    assert.ok(list.some((target) => target.id === "page:1"));
+    assert.match(list[0].devtoolsFrontendUrl, /\/devtools\/inspector\.html\?ws=/);
+
+    const protocol = await readJson(`${bridge.httpBaseUrl}/json/protocol`);
+    assert.ok(Array.isArray(protocol.domains));
+    assert.ok(protocol.domains.some((domain) => domain.domain === "Page"));
+
+    const createdTarget = await readJson(`${bridge.httpBaseUrl}/json/new?https://example.com`, {
+      method: "PUT"
+    });
+    assert.equal(createdTarget.id, "page:2");
+    assert.equal(createdTarget.url, "https://example.com");
+
+    const activateResponse = await readResponse(`${bridge.httpBaseUrl}/json/activate/page%3A2`);
+    assert.equal(activateResponse.status, 200);
+    assert.equal(await activateResponse.text(), "Target activated");
+
+    const closeResponse = await readResponse(`${bridge.httpBaseUrl}/json/close/page%3A2`);
+    assert.equal(closeResponse.status, 200);
+    assert.equal(await closeResponse.text(), "Target is closing");
 
     const ws = new WebSocket(bridge.browserWebSocketUrl);
     await once(ws, "open");
@@ -46,6 +68,13 @@ test("bridge exposes discovery endpoints and browser websocket", async () => {
     const targetsMessage = JSON.parse(rawTargets.toString());
     assert.equal(targetsMessage.id, 2);
     assert.ok(targetsMessage.result.targetInfos.length >= 1);
+    assert.equal("webSocketDebuggerUrl" in targetsMessage.result.targetInfos[0], false);
+
+    ws.send(JSON.stringify({ id: 3, method: "Browser.getWindowForTarget", params: { targetId: "page:1" } }));
+    const [rawWindow] = await once(ws, "message");
+    const windowMessage = JSON.parse(rawWindow.toString());
+    assert.equal(windowMessage.id, 3);
+    assert.equal(windowMessage.result.windowId, 1);
 
     ws.close();
   } finally {
@@ -60,7 +89,7 @@ test("bridge page websocket supports snapshot-like commands without a stored ses
 
   try {
     const targets = await readJson(`${bridge.httpBaseUrl}/json/list`);
-    const pageTarget = targets.find((target) => target.targetId === "page:1");
+    const pageTarget = targets.find((target) => target.id === "page:1");
     assert.ok(pageTarget?.webSocketDebuggerUrl, "expected page websocket URL");
 
     const ws = new WebSocket(pageTarget.webSocketDebuggerUrl);
@@ -77,6 +106,12 @@ test("bridge page websocket supports snapshot-like commands without a stored ses
     const evalMessage = JSON.parse(rawEval.toString());
     assert.equal(evalMessage.id, 2);
     assert.equal(evalMessage.result.result.value, "Fake Page");
+
+    ws.send(JSON.stringify({ id: 3, method: "Page.getLayoutMetrics" }));
+    const [rawLayout] = await once(ws, "message");
+    const layoutMessage = JSON.parse(rawLayout.toString());
+    assert.equal(layoutMessage.id, 3);
+    assert.equal(layoutMessage.result.cssContentSize.width, 1280);
 
     ws.close();
   } finally {

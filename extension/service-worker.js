@@ -1,18 +1,34 @@
 const HOST_NAME = "com.cdt_bridge";
 const DEBUGGER_VERSION = "1.3";
 const SUPPORTED_METHODS = new Set([
+  "Browser.getWindowForTarget",
+  "Browser.grantPermissions",
+  "Browser.setContentsSize",
+  "Browser.setDownloadBehavior",
   "Target.setAutoAttach",
   "Page.enable",
   "Page.navigate",
   "Page.reload",
   "Page.bringToFront",
+  "Page.addScriptToEvaluateOnNewDocument",
+  "Page.captureScreenshot",
+  "Page.getFrameTree",
+  "Page.getLayoutMetrics",
+  "Page.handleJavaScriptDialog",
+  "Page.printToPDF",
+  "Page.setDocumentContent",
   "Runtime.enable",
+  "Runtime.callFunctionOn",
   "Runtime.evaluate",
   "Runtime.runIfWaitingForDebugger",
   "Accessibility.enable",
   "Accessibility.getFullAXTree",
   "Network.enable",
+  "Network.emulateNetworkConditions",
+  "Network.getAllCookies",
   "Network.getCookies",
+  "Network.getResponseBody",
+  "Network.setExtraHTTPHeaders",
   "Network.setCookies",
   "Network.clearBrowserCookies",
   "DOM.enable",
@@ -30,15 +46,22 @@ const SUPPORTED_METHODS = new Set([
   "Overlay.hideHighlight",
   "Fetch.enable",
   "Fetch.disable",
+  "Fetch.continueWithAuth",
   "Fetch.continueRequest",
   "Fetch.failRequest",
   "Fetch.fulfillRequest",
+  "IO.read",
+  "Profiler.start",
+  "Profiler.stop",
+  "Security.setIgnoreCertificateErrors",
   "Storage.getCookies",
   "Storage.setCookies",
   "Storage.clearDataForOrigin",
   "Emulation.setDeviceMetricsOverride",
   "Emulation.setEmulatedMedia",
-  "Emulation.setUserAgentOverride"
+  "Emulation.setUserAgentOverride",
+  "Tracing.start",
+  "Tracing.end"
 ]);
 const OPTIONAL_NOOP_METHODS = new Set([
   "Runtime.runIfWaitingForDebugger",
@@ -622,12 +645,27 @@ async function closeTarget(targetId) {
   return { success: true };
 }
 
+function parseBrowserDiagnostics() {
+  const userAgent = navigator.userAgent ?? "";
+  const browserMatch = userAgent.match(/(?:HeadlessChrome|Chrome|Chromium|Edg)\/[0-9.]+/);
+  const webKitMatch = userAgent.match(/AppleWebKit\/([0-9.]+)/);
+
+  return {
+    browserVersion: browserMatch?.[0]?.replace(/^HeadlessChrome\//, "Chrome/") ?? "Chrome/0.0.0.0",
+    userAgent,
+    jsVersion: null,
+    webKitVersion: webKitMatch?.[1] ?? "537.36"
+  };
+}
+
 async function getDiagnostics() {
+  const browser = parseBrowserDiagnostics();
   return {
     extensionVersion: chrome.runtime.getManifest().version,
-    browserVersion: navigator.userAgent,
-    userAgent: navigator.userAgent,
-    jsVersion: navigator.userAgent,
+    browserVersion: browser.browserVersion,
+    userAgent: browser.userAgent,
+    jsVersion: browser.jsVersion,
+    webKitVersion: browser.webKitVersion,
     attachedTabs: [...state.rootAttachments.keys()],
     bridgeStatus: state.bridgeStatus,
     lastError: state.lastError

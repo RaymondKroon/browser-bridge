@@ -12,6 +12,7 @@
     "test:agent-browser": "node --test .\\test\\agent-browser-smoke.test.js"
   },
   "dependencies": {
+    "devtools-protocol": "^0.0.1619965",
     "ws": "^8.18.3"
   },
   "devDependencies": {

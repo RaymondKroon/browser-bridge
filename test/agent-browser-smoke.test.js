@@ -244,3 +244,71 @@ test("agent-browser cookie commands use Network cookie methods", { timeout: 3000
     }
   });
 });
+
+test("agent-browser can set the viewport through browser-scoped CDP methods", { timeout: 20000 }, async (t) => {
+  await withAgentBrowserEnv(async (env) => {
+    const transport = new FakeExtensionTransport();
+    const bridge = new CdpBridgeServer({ transport, port: 0 });
+    const sessionName = `bridge-viewport-${Date.now()}`;
+    await bridge.start();
+
+    try {
+      await cleanupAgentBrowser(sessionName, env);
+      const result = await runAgentBrowser(
+        ["--session", sessionName, "--cdp", `${bridge.port}`, "set", "viewport", "1280", "720"],
+        { env }
+      );
+      if (!assertAgentBrowserSuccess(t, result)) {
+        return;
+      }
+
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Emulation.setDeviceMetricsOverride"),
+        "expected agent-browser to call Emulation.setDeviceMetricsOverride"
+      );
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Browser.getWindowForTarget"),
+        "expected agent-browser to call Browser.getWindowForTarget"
+      );
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Browser.setContentsSize"),
+        "expected agent-browser to call Browser.setContentsSize"
+      );
+    } finally {
+      await cleanupAgentBrowser(sessionName, env);
+      await bridge.stop();
+    }
+  });
+});
+
+test("agent-browser can highlight a snapshot reference", { timeout: 20000 }, async (t) => {
+  await withAgentBrowserEnv(async (env) => {
+    const transport = new FakeExtensionTransport();
+    const bridge = new CdpBridgeServer({ transport, port: 0 });
+    const sessionName = `bridge-highlight-${Date.now()}`;
+    await bridge.start();
+
+    try {
+      await cleanupAgentBrowser(sessionName, env);
+      const result = await runAgentBrowser(
+        ["--session", sessionName, "--cdp", `${bridge.port}`, "batch", "snapshot -i", "highlight @e1"],
+        { env }
+      );
+      if (!assertAgentBrowserSuccess(t, result)) {
+        return;
+      }
+
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "DOM.resolveNode"),
+        "expected agent-browser to call DOM.resolveNode"
+      );
+      assert.ok(
+        transport.commandLog.some(({ method }) => method === "Runtime.callFunctionOn"),
+        "expected agent-browser to call Runtime.callFunctionOn"
+      );
+    } finally {
+      await cleanupAgentBrowser(sessionName, env);
+      await bridge.stop();
+    }
+  });
+});

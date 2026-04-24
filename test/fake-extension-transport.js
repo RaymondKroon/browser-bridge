@@ -67,7 +67,15 @@ export class FakeExtensionTransport extends EventEmitter {
         }
         return {};
       case "activateTarget":
+        return { success: true };
       case "closeTarget":
+        if (payload.targetId && this.targets.has(payload.targetId)) {
+          this.targets.delete(payload.targetId);
+          this.emit("event", {
+            type: "targetDestroyed",
+            targetId: payload.targetId
+          });
+        }
         return { success: true };
       case "sendCommand":
         return this.handleCommand(payload);
@@ -80,13 +88,105 @@ export class FakeExtensionTransport extends EventEmitter {
     this.commandLog.push({ method, params, sessionId, targetId });
 
     switch (method) {
+      case "Browser.getWindowForTarget":
+        return {
+          windowId: 1,
+          bounds: {
+            left: 0,
+            top: 0,
+            width: 1280,
+            height: 720,
+            windowState: "normal"
+          }
+        };
+      case "Browser.grantPermissions":
+      case "Browser.setContentsSize":
+      case "Browser.setDownloadBehavior":
       case "Page.enable":
+      case "Page.addScriptToEvaluateOnNewDocument":
+      case "Page.handleJavaScriptDialog":
       case "Runtime.enable":
       case "Runtime.runIfWaitingForDebugger":
       case "Accessibility.enable":
       case "Network.enable":
+      case "Network.emulateNetworkConditions":
+      case "Network.setExtraHTTPHeaders":
       case "DOM.enable":
       case "Target.setAutoAttach":
+      case "Fetch.continueWithAuth":
+      case "Profiler.start":
+      case "Security.setIgnoreCertificateErrors":
+      case "Tracing.start":
+      case "Tracing.end":
+        return {};
+      case "Page.captureScreenshot":
+        return {
+          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnR4V8AAAAASUVORK5CYII="
+        };
+      case "Page.getFrameTree":
+        return {
+          frameTree: {
+            frame: {
+              id: "frame-1",
+              url: this.targets.get(targetId)?.url ?? "about:blank",
+              domainAndRegistry: "",
+              securityOrigin: "null",
+              mimeType: "text/html"
+            }
+          }
+        };
+      case "Page.getLayoutMetrics":
+        return {
+          layoutViewport: {
+            pageX: 0,
+            pageY: 0,
+            clientWidth: 1280,
+            clientHeight: 720
+          },
+          visualViewport: {
+            offsetX: 0,
+            offsetY: 0,
+            pageX: 0,
+            pageY: 0,
+            clientWidth: 1280,
+            clientHeight: 720,
+            scale: 1,
+            zoom: 1
+          },
+          contentSize: {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720
+          },
+          cssLayoutViewport: {
+            pageX: 0,
+            pageY: 0,
+            clientWidth: 1280,
+            clientHeight: 720
+          },
+          cssVisualViewport: {
+            offsetX: 0,
+            offsetY: 0,
+            pageX: 0,
+            pageY: 0,
+            clientWidth: 1280,
+            clientHeight: 720,
+            scale: 1,
+            zoom: 1
+          },
+          cssContentSize: {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720
+          }
+        };
+      case "Page.printToPDF":
+        return {
+          data: "JVBERi0xLjQKJcTl8uXrp/Og0MTGCjEgMCBvYmoKPDwvVHlwZS9DYXRhbG9nPj4KZW5kb2JqCnRyYWlsZXIKPDwvUm9vdCAxIDAgUj4+CiUlRU9G"
+        };
+      case "Page.setDocumentContent":
         return {};
       case "Page.navigate": {
         const target = this.targets.get(targetId);
@@ -117,10 +217,23 @@ export class FakeExtensionTransport extends EventEmitter {
                   : "ok"
           }
         };
+      case "Runtime.callFunctionOn":
+        return {
+          result: {
+            type: "string",
+            value: "ok"
+          }
+        };
+      case "Network.getAllCookies":
       case "Network.getCookies":
       case "Storage.getCookies":
         return {
           cookies: this.getCookiesForRequest(method, params, targetId)
+        };
+      case "Network.getResponseBody":
+        return {
+          body: "",
+          base64Encoded: false
         };
       case "Network.setCookies":
       case "Storage.setCookies":
@@ -134,6 +247,22 @@ export class FakeExtensionTransport extends EventEmitter {
           this.cookies = this.cookies.filter((cookie) => !this.cookieMatchesOrigin(cookie, params.origin));
         }
         return {};
+      case "IO.read":
+        return {
+          data: "",
+          base64Encoded: false,
+          eof: true
+        };
+      case "Profiler.stop":
+        return {
+          profile: {
+            nodes: [],
+            startTime: 0,
+            endTime: 0,
+            samples: [],
+            timeDeltas: []
+          }
+        };
       case "DOM.getDocument":
         return {
           root: {
@@ -145,6 +274,18 @@ export class FakeExtensionTransport extends EventEmitter {
             childNodeCount: 1
           }
         };
+      case "DOM.resolveNode":
+        return {
+          object: {
+            type: "object",
+            className: "HTMLButtonElement",
+            description: "button",
+            objectId: `node-${params?.backendNodeId ?? 2}`
+          }
+        };
+      case "Overlay.highlightNode":
+      case "Overlay.hideHighlight":
+        return {};
       case "Accessibility.getFullAXTree":
         return {
           nodes: [

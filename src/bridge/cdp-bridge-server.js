@@ -1,6 +1,8 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
+import browserProtocol from "devtools-protocol/json/browser_protocol.json" with { type: "json" };
+import jsProtocol from "devtools-protocol/json/js_protocol.json" with { type: "json" };
 import {
   BRIDGE_PROTOCOL_VERSION,
   BRIDGE_VERSION,
@@ -25,7 +27,21 @@ function sendWsJson(ws, payload) {
   }
 }
 
-function normalizeTargetInfo(target, pageWebSocketDebuggerUrl) {
+const DEVTOOLS_PROTOCOL_PAYLOAD = {
+  version: browserProtocol.version ?? { major: "1", minor: "3" },
+  domains: [...(browserProtocol.domains ?? []), ...(jsProtocol.domains ?? [])]
+};
+const TARGET_SCOPED_SESSIONLESS_METHODS = new Set([
+  "Browser.getWindowForTarget",
+  "Browser.grantPermissions",
+  "Browser.setContentsSize",
+  "Browser.setDownloadBehavior",
+  "Security.setIgnoreCertificateErrors",
+  "Tracing.start",
+  "Tracing.end"
+]);
+
+function normalizeTargetInfo(target) {
   return {
     targetId: target.targetId,
     type: target.type ?? "page",
@@ -35,7 +51,18 @@ function normalizeTargetInfo(target, pageWebSocketDebuggerUrl) {
     canAccessOpener: false,
     browserContextId: "default",
     openerId: target.openerId ?? undefined,
-    faviconUrl: target.faviconUrl ?? undefined,
+    faviconUrl: target.faviconUrl ?? undefined
+  };
+}
+
+function normalizeHttpTarget(target, { devtoolsFrontendUrl, pageWebSocketDebuggerUrl }) {
+  return {
+    description: "",
+    devtoolsFrontendUrl,
+    id: target.targetId,
+    title: target.title ?? "",
+    type: target.type ?? "page",
+    url: target.url ?? "about:blank",
     webSocketDebuggerUrl: pageWebSocketDebuggerUrl
   };
 }
@@ -126,32 +153,88 @@ export class CdpBridgeServer {
     return `http://${this.host}:${this.port}`;
   }
 
-  async getVersionPayload() {
+  async getDiagnostics() {
     let diagnostics = null;
     try {
       diagnostics = await this.transport.request("getDiagnostics", {});
     } catch {
       diagnostics = null;
     }
+    return diagnostics;
+  }
 
+  async getVersionPayload() {
+    const diagnostics = await this.getDiagnostics();
     return {
       Browser: diagnostics?.browserVersion ?? "CDT Extension Bridge/0.1.0",
       "Protocol-Version": BRIDGE_PROTOCOL_VERSION,
       "User-Agent": diagnostics?.userAgent ?? "CDT Extension Bridge",
-      "V8-Version": diagnostics?.jsVersion ?? process.version,
-      "WebKit-Version": "extension-bridge",
+      "V8-Version": diagnostics?.jsVersion ?? process.versions.v8,
+      "WebKit-Version": diagnostics?.webKitVersion ?? "537.36",
       webSocketDebuggerUrl: this.browserWebSocketUrl
     };
   }
 
+  getPageWebSocketUrl(targetId) {
+    return `ws://${this.host}:${this.port}/devtools/page/${encodeURIComponent(targetId)}`;
+  }
+
+  getDevtoolsFrontendUrl(targetId) {
+    return `/devtools/inspector.html?ws=${this.host}:${this.port}/devtools/page/${encodeURIComponent(
+      targetId
+    )}`;
+  }
+
+  async getRawTargets() {
+    return await this.transport.request("listTargets", {});
+  }
+
   async listTargets() {
-    const targets = await this.transport.request("listTargets", {});
+    const targets = await this.getRawTargets();
     return targets.map((target) =>
-      normalizeTargetInfo(
-        target,
-        `ws://${this.host}:${this.port}/devtools/page/${encodeURIComponent(target.targetId)}`
-      )
+      normalizeTargetInfo(target)
     );
+  }
+
+  async listHttpTargets() {
+    const targets = await this.getRawTargets();
+    return targets.map((target) =>
+      normalizeHttpTarget(target, {
+        devtoolsFrontendUrl: this.getDevtoolsFrontendUrl(target.targetId),
+        pageWebSocketDebuggerUrl: this.getPageWebSocketUrl(target.targetId)
+      })
+    );
+  }
+
+  async getHttpTarget(targetId) {
+    const targets = await this.getRawTargets();
+    const target = targets.find((candidate) => candidate.targetId === targetId);
+    if (!target) {
+      return null;
+    }
+
+    return normalizeHttpTarget(target, {
+      devtoolsFrontendUrl: this.getDevtoolsFrontendUrl(target.targetId),
+      pageWebSocketDebuggerUrl: this.getPageWebSocketUrl(target.targetId)
+    });
+  }
+
+  parseJsonNewUrl(requestUrl) {
+    const rawQuery = requestUrl.search.length > 1 ? requestUrl.search.slice(1) : "";
+    if (!rawQuery) {
+      return "about:blank";
+    }
+
+    try {
+      return decodeURIComponent(rawQuery);
+    } catch {
+      return rawQuery;
+    }
+  }
+
+  sendPlainText(res, statusCode, body) {
+    res.writeHead(statusCode, { "content-type": "text/plain; charset=UTF-8" });
+    res.end(body);
   }
 
   async handleHttpRequest(req, res) {
@@ -175,18 +258,55 @@ export class CdpBridgeServer {
         return;
       }
 
-      if (requestUrl.pathname === "/json" || requestUrl.pathname === "/json/list") {
-        const targets = await this.listTargets();
-        const browserTarget = {
-          id: this.browserId,
-          type: "browser",
-          title: "CDT Extension Bridge",
-          url: this.httpBaseUrl,
-          webSocketDebuggerUrl: this.browserWebSocketUrl
-        };
-
+      if (requestUrl.pathname === "/json/protocol" || requestUrl.pathname === "/json/protocol/") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify([browserTarget, ...targets]));
+        res.end(JSON.stringify(DEVTOOLS_PROTOCOL_PAYLOAD));
+        return;
+      }
+
+      if (requestUrl.pathname === "/json" || requestUrl.pathname === "/json/list") {
+        const targets = await this.listHttpTargets();
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(targets));
+        return;
+      }
+
+      if (requestUrl.pathname === "/json/new" && req.method === "PUT") {
+        const result = await this.transport.request("createTarget", {
+          url: this.parseJsonNewUrl(requestUrl)
+        });
+        const target = await this.getHttpTarget(result.targetId);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(target ?? normalizeHttpTarget(result, {
+          devtoolsFrontendUrl: this.getDevtoolsFrontendUrl(result.targetId),
+          pageWebSocketDebuggerUrl: this.getPageWebSocketUrl(result.targetId)
+        })));
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/json/activate/")) {
+        const targetId = decodeURIComponent(requestUrl.pathname.slice("/json/activate/".length));
+        const target = await this.getHttpTarget(targetId);
+        if (!target) {
+          this.sendPlainText(res, 404, `No such target id: ${targetId}`);
+          return;
+        }
+
+        await this.transport.request("activateTarget", { targetId });
+        this.sendPlainText(res, 200, "Target activated");
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/json/close/")) {
+        const targetId = decodeURIComponent(requestUrl.pathname.slice("/json/close/".length));
+        const target = await this.getHttpTarget(targetId);
+        if (!target) {
+          this.sendPlainText(res, 404, `No such target id: ${targetId}`);
+          return;
+        }
+
+        await this.transport.request("closeTarget", { targetId });
+        this.sendPlainText(res, 200, "Target is closing");
         return;
       }
 
@@ -335,14 +455,16 @@ export class CdpBridgeServer {
     }
 
     switch (message.method) {
-      case "Browser.getVersion":
+      case "Browser.getVersion": {
+        const diagnostics = await this.getDiagnostics();
         return {
           protocolVersion: BRIDGE_PROTOCOL_VERSION,
-          product: "CDT Extension Bridge/0.1.0",
+          product: diagnostics?.browserVersion ?? "Chrome/0.0.0.0",
           revision: "extension-bridge",
-          userAgent: "CDT Extension Bridge",
-          jsVersion: process.version
+          userAgent: diagnostics?.userAgent ?? "CDT Extension Bridge",
+          jsVersion: diagnostics?.jsVersion ?? process.versions.v8
         };
+      }
       case "Target.setDiscoverTargets":
         connection.discoverTargets = Boolean(message.params?.discover);
         return {};
@@ -407,6 +529,17 @@ export class CdpBridgeServer {
       });
     }
 
+    if (TARGET_SCOPED_SESSIONLESS_METHODS.has(message.method)) {
+      return (
+        (await this.transport.request("sendCommand", {
+          method: message.method,
+          params: message.params ?? {},
+          sessionId: message.sessionId ?? null,
+          targetId: message.params?.targetId ?? connection.targetId ?? null
+        })) ?? {}
+      );
+    }
+
     const sessionId = message.sessionId ?? connection.pageSessionId;
     if (!sessionId) {
       throw createProtocolError(-32000, "No active session for command", {
@@ -445,10 +578,7 @@ export class CdpBridgeServer {
     if (event.type === "targetCreated" || event.type === "targetInfoChanged") {
       const method =
         event.type === "targetCreated" ? "Target.targetCreated" : "Target.targetInfoChanged";
-      const pageWs = `ws://${this.host}:${this.port}/devtools/page/${encodeURIComponent(
-        event.targetInfo.targetId
-      )}`;
-      const targetInfo = normalizeTargetInfo(event.targetInfo, pageWs);
+      const targetInfo = normalizeTargetInfo(event.targetInfo);
 
       for (const connection of this.connections) {
         if (connection.mode === "browser" && connection.discoverTargets) {
