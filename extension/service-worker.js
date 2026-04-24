@@ -347,30 +347,12 @@ function buildTargetInfo(tab) {
   return {
     targetId: makePageTargetId(tab.id),
     tabId: tab.id,
-    type: classifyTargetType(tab.url),
+    type: "page",
     title: tab.title ?? "",
     url: tab.url ?? "about:blank",
     attached: state.rootAttachments.has(tab.id),
     faviconUrl: tab.favIconUrl ?? undefined
   };
-}
-
-function classifyTargetType(url) {
-  if (!url || url === "about:blank" || url === "about:srcdoc") {
-    return "page";
-  }
-
-  const internalPrefixes = [
-    "chrome://",
-    "chrome-extension://",
-    "devtools://",
-    "edge://",
-    "extension://",
-    "about:newtab",
-    "view-source:"
-  ];
-
-  return internalPrefixes.some((prefix) => url.startsWith(prefix)) ? "other" : "page";
 }
 
 function compareTabsForDiscovery(left, right) {
