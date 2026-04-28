@@ -9,6 +9,8 @@ export class NativeMessagingTransport extends EventEmitter {
     this.buffer = Buffer.alloc(0);
     this.pending = new Map();
     this.started = false;
+    this.disconnected = false;
+    this.disconnectError = null;
   }
 
   start() {
@@ -21,6 +23,10 @@ export class NativeMessagingTransport extends EventEmitter {
     this.input.on("end", () => this.handleDisconnect(new Error("Native messaging input ended")));
     this.input.on("close", () =>
       this.handleDisconnect(new Error("Native messaging input closed"))
+    );
+    this.output.on("error", (error) => this.handleDisconnect(error));
+    this.output.on("close", () =>
+      this.handleDisconnect(new Error("Native messaging output closed"))
     );
     this.input.resume?.();
   }
@@ -70,6 +76,12 @@ export class NativeMessagingTransport extends EventEmitter {
   }
 
   handleDisconnect(error) {
+    if (this.disconnected) {
+      return;
+    }
+
+    this.disconnected = true;
+    this.disconnectError = error;
     for (const pending of this.pending.values()) {
       pending.reject(error);
     }
@@ -78,10 +90,21 @@ export class NativeMessagingTransport extends EventEmitter {
   }
 
   sendRaw(message) {
+    if (this.disconnected || this.output.destroyed || this.output.writableEnded) {
+      throw this.disconnectError ?? new Error("Native messaging output is not writable");
+    }
+
     const payload = Buffer.from(JSON.stringify(message), "utf8");
     const header = Buffer.alloc(4);
     header.writeUInt32LE(payload.length, 0);
-    this.output.write(Buffer.concat([header, payload]));
+    const frame = Buffer.concat([header, payload]);
+
+    try {
+      this.output.write(frame);
+    } catch (error) {
+      this.handleDisconnect(error);
+      throw error;
+    }
   }
 
   notify(event, payload) {
@@ -116,12 +139,20 @@ export class NativeMessagingTransport extends EventEmitter {
       });
     });
 
-    this.sendRaw({
-      type: "request",
-      requestId,
-      action,
-      payload
-    });
+    try {
+      this.sendRaw({
+        type: "request",
+        requestId,
+        action,
+        payload
+      });
+    } catch (error) {
+      const pending = this.pending.get(requestId);
+      if (pending) {
+        this.pending.delete(requestId);
+        pending.reject(error);
+      }
+    }
 
     try {
       return await response;

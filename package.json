@@ -5,8 +5,6 @@
   "type": "module",
   "description": "MV3 extension + native messaging bridge that exposes a curated CDP endpoint for an already-running Chromium session.",
   "scripts": {
-    "repair:agent-browser": "node .\\scripts\\repair-agent-browser-state.js",
-    "repair:agent-browser:force": "node .\\scripts\\repair-agent-browser-state.js --force",
     "start:host": "node .\\native-host\\host.js",
     "test": "node --test",
     "test:agent-browser": "node --test .\\test\\agent-browser-smoke.test.js"
