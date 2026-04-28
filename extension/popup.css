@@ -30,6 +30,29 @@ h2 {
   margin-bottom: 8px;
 }
 
+.field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.field-control {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+input {
+  width: 96px;
+  padding: 8px 10px;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  background: #111827;
+  color: #f9fafb;
+}
+
 button {
   appearance: none;
   border: none;

@@ -2,11 +2,39 @@ import { BRIDGE_VERSION, DEFAULT_BRIDGE_PORT } from "../bridge/constants.js";
 import { CdpBridgeServer } from "../bridge/cdp-bridge-server.js";
 import { NativeMessagingTransport } from "./native-messaging-transport.js";
 
-function parsePreferredPort(rawValue) {
-  const parsed = Number.parseInt(rawValue ?? `${DEFAULT_BRIDGE_PORT}`, 10);
+const INITIAL_HELLO_TIMEOUT_MS = 1000;
+
+export function parsePreferredPort(rawValue, fallback = DEFAULT_BRIDGE_PORT) {
+  const parsed = Number.parseInt(rawValue ?? `${fallback}`, 10);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535
     ? parsed
-    : DEFAULT_BRIDGE_PORT;
+    : fallback;
+}
+
+export async function waitForInitialHello(transport, timeoutMs = INITIAL_HELLO_TIMEOUT_MS) {
+  return await new Promise((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      transport.off?.("message", onMessage);
+    };
+    const settle = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const onMessage = (message) => {
+      if (message?.type === "hello") {
+        settle(message);
+      }
+    };
+    const timeout = setTimeout(() => settle(null), timeoutMs);
+
+    transport.on("message", onMessage);
+  });
 }
 
 export async function startBridgeServer({
@@ -42,7 +70,11 @@ export async function runNativeHost() {
   const transport = new NativeMessagingTransport();
   transport.start();
 
-  const preferredPort = parsePreferredPort(process.env.CDT_BRIDGE_PORT);
+  const hello = await waitForInitialHello(transport);
+  const preferredPort = parsePreferredPort(
+    hello?.bridgePort,
+    parsePreferredPort(process.env.CDT_BRIDGE_PORT)
+  );
   const bridge = await startBridgeServer({ transport, preferredPort });
 
   transport.notify("bridgeStatus", {

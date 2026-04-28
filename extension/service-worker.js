@@ -73,6 +73,11 @@ const BROWSER_INTERNAL_URL_PATTERN =
 const COMMAND_TIMEOUT_MS = 5000;
 const INTERNAL_NAVIGATION_FALLBACK_MS = 100;
 const ACTION_ICON_SIZES = [16, 32];
+const BRIDGE_SETTINGS_STORAGE_KEY = "bridgeSettings";
+const DEFAULT_BRIDGE_PORT = 9222;
+const DEFAULT_BRIDGE_SETTINGS = Object.freeze({
+  port: DEFAULT_BRIDGE_PORT
+});
 const ACTION_COLORS = {
   connected: "#16a34a",
   disconnected: "#6b7280",
@@ -86,6 +91,8 @@ const state = {
   stoppingHost: false,
   bridgeStatus: null,
   lastError: null,
+  settings: { ...DEFAULT_BRIDGE_SETTINGS },
+  settingsLoaded: false,
   rootAttachments: new Map(),
   sessions: new Map(),
   expectedDetachTabs: new Set(),
@@ -134,6 +141,36 @@ function parsePageTargetId(targetId) {
 
 function makeRootSessionId() {
   return `root-${crypto.randomUUID()}`;
+}
+
+function normalizeBridgePort(rawValue, fallback = DEFAULT_BRIDGE_SETTINGS.port) {
+  const parsed = Number.parseInt(rawValue ?? `${fallback}`, 10);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : fallback;
+}
+
+async function loadSettings() {
+  if (state.settingsLoaded) {
+    return state.settings;
+  }
+
+  const stored = await chrome.storage.local.get(BRIDGE_SETTINGS_STORAGE_KEY);
+  state.settings = {
+    port: normalizeBridgePort(stored?.[BRIDGE_SETTINGS_STORAGE_KEY]?.port)
+  };
+  state.settingsLoaded = true;
+  return state.settings;
+}
+
+async function saveSettings(nextSettings) {
+  const settings = {
+    port: normalizeBridgePort(nextSettings?.port)
+  };
+  await chrome.storage.local.set({
+    [BRIDGE_SETTINGS_STORAGE_KEY]: settings
+  });
+  state.settings = settings;
+  state.settingsLoaded = true;
+  return settings;
 }
 
 function postNativeMessage(message) {
@@ -236,6 +273,8 @@ async function detachDebuggerTab(tabId) {
 }
 
 async function ensureNativePort() {
+  await loadSettings();
+
   if (state.nativePort) {
     await waitForBridgeStatus();
     return state.nativePort;
@@ -267,7 +306,8 @@ async function ensureNativePort() {
 
   port.postMessage({
     type: "hello",
-    version: "0.1.0"
+    version: "0.1.0",
+    bridgePort: state.settings.port
   });
 
   await waitForBridgeStatus();
@@ -872,7 +912,8 @@ async function getDiagnostics() {
     webKitVersion: browser.webKitVersion,
     attachedTabs: [...state.rootAttachments.keys()],
     bridgeStatus: state.bridgeStatus,
-    lastError: state.lastError
+    lastError: state.lastError,
+    settings: state.settings
   };
 }
 
@@ -1090,11 +1131,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             state: await getDiagnostics()
           });
           return;
+        case "set-port": {
+          state.lastError = null;
+          const wasConnected = Boolean(state.nativePort);
+          const settings = await saveSettings({ port: message.port });
+          if (wasConnected) {
+            await stopHost();
+            await ensureNativePort();
+          }
+          sendResponse({
+            ok: true,
+            state: await getDiagnostics(),
+            bridgeStatus: state.bridgeStatus,
+            settings
+          });
+          return;
+        }
         case "get-state":
           sendResponse({
             ok: true,
             state: await getDiagnostics(),
             bridgeStatus: state.bridgeStatus,
+            settings: state.settings,
             capabilities: getCapabilities(),
             targets: await listTargets()
           });
@@ -1116,9 +1174,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-void ensureNativePort().catch((error) => {
+refreshActionState();
+
+void (async () => {
+  await loadSettings();
+  await ensureNativePort();
+})().catch((error) => {
   state.lastError = error.message;
   refreshActionState();
 });
-
-refreshActionState();

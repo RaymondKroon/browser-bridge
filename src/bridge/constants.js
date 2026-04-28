@@ -4,7 +4,7 @@ export const BRIDGE_VERSION = "0.1.0";
 export const BRIDGE_PROTOCOL_VERSION = "1.3";
 export const HOST_NAME = "com.cdt_extension.bridge";
 export const DEFAULT_BRIDGE_HOST = "127.0.0.1";
-export const DEFAULT_BRIDGE_PORT = 0;
+export const DEFAULT_BRIDGE_PORT = 9222;
 
 export const SUPPORTED_METHODS = new Set([
   "Browser.getVersion",

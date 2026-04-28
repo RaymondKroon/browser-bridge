@@ -11,6 +11,13 @@
       <section class="panel">
         <div class="row"><span>Native host</span><strong id="host-status">Starting...</strong></div>
         <div class="row"><span>Bridge</span><strong id="bridge-url">-</strong></div>
+        <label class="field" for="bridge-port">
+          <span>Port</span>
+          <span class="field-control">
+            <input id="bridge-port" type="number" min="0" max="65535" inputmode="numeric" value="9222">
+            <button id="save-port-button" type="button" class="secondary">Save</button>
+          </span>
+        </label>
         <div class="row"><span>Last error</span><strong id="last-error">-</strong></div>
         <button id="connection-button" type="button">Connect</button>
       </section>

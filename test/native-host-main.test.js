@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { once } from "node:events";
-import { startBridgeServer } from "../src/native-host/main.js";
+import { EventEmitter, once } from "node:events";
+import {
+  parsePreferredPort,
+  startBridgeServer,
+  waitForInitialHello
+} from "../src/native-host/main.js";
 import { FakeExtensionTransport } from "./fake-extension-transport.js";
 
 async function listen(server, port) {
@@ -47,4 +51,29 @@ test("native host falls back to a free port when the preferred port is occupied"
     occupiedServer.close();
     await once(occupiedServer, "close");
   }
+});
+
+test("native host defaults to port 9222 when the preferred port is missing or invalid", () => {
+  assert.equal(parsePreferredPort(undefined), 9222);
+  assert.equal(parsePreferredPort("not-a-port"), 9222);
+  assert.equal(parsePreferredPort("70000"), 9222);
+  assert.equal(parsePreferredPort("9333"), 9333);
+});
+
+test("native host reads the initial hello message before bridge startup", async () => {
+  const transport = new EventEmitter();
+  const helloPromise = waitForInitialHello(transport, 100);
+
+  queueMicrotask(() => {
+    transport.emit("message", {
+      type: "hello",
+      version: "0.1.0",
+      bridgePort: 9444
+    });
+  });
+
+  await assert.doesNotReject(async () => {
+    const hello = await helloPromise;
+    assert.equal(hello.bridgePort, 9444);
+  });
 });

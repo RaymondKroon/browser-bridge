@@ -60,7 +60,7 @@ Unsupported methods return a structured JSON-RPC/CDP-style error with code `-326
 
 5. Open the extension popup and confirm the bridge status shows a local URL such as `http://127.0.0.1:<bridge-port>`.
 
-   The native host picks an available loopback port by default so it does not collide with a browser's own remote-debugging port. If you need a fixed port, set `CDT_BRIDGE_PORT` before starting the host; if that port is busy, the host falls back to a free local port.
+   The bridge uses port `9222` by default. You can change it from the popup, and the extension persists that setting across browser restarts. If the configured port is busy, the native host falls back to a free local port.
 
 ## Use with agent-browser
 

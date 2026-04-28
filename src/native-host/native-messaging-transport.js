@@ -70,6 +70,8 @@ export class NativeMessagingTransport extends EventEmitter {
       return;
     }
 
+    this.emit("message", message);
+
     if (message.type === "event") {
       this.emit("event", message.payload ?? message);
     }

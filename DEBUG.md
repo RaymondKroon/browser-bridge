@@ -9,6 +9,7 @@ Use this guide to debug the extension, native host, and `agent-browser` flow in 
 - The extension popup is the fastest health check:
   - **Native host** should show `Started`
   - **Bridge** should show `http://127.0.0.1:<port>`
+  - **Port** defaults to `9222` unless you saved a different value in the popup
   - **Last error** should be `-`
 - After changing extension code, reload the unpacked extension and restart Chromium before retesting.
 
@@ -98,6 +99,8 @@ In the real `chromium-browser` run from this session, the bridge auto-started on
 - **Bridge** = `http://127.0.0.1:<port>`
 
 without clicking **Start**.
+
+The popup's **Port** field is persistent, so the auto-started host should come back on the last saved port unless that port is already in use.
 
 ## 6. Smoke test the bridge directly
 

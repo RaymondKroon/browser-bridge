@@ -8,13 +8,14 @@ const serviceWorkerPath = path.resolve(process.cwd(), "extension", "service-work
 
 async function loadServiceWorkerHarness({
   tab = { id: 1, url: "about:blank", title: "Blank" },
+  storedBridgeSettings = undefined,
   debuggerSendCommand = async () => {
     throw new Error("Debugger command should not have been called");
   }
 } = {}) {
   let source = await readFile(serviceWorkerPath, "utf8");
   source = source.replace(
-    /\nvoid ensureNativePort\(\)\.catch\(\(error\) => \{\n[\s\S]*?\n\}\);\n\nrefreshActionState\(\);\n?$/,
+    /\nrefreshActionState\(\);\n\nvoid \(async \(\) => \{\n[\s\S]*?\n\}\)\(\)\.catch\(\(error\) => \{\n[\s\S]*?\n\}\);\n?$/,
     "\n"
   );
   source += "\n;globalThis.__serviceWorkerTestExports = { sendCommand, state, makePageTargetId };\n";
@@ -23,6 +24,8 @@ async function loadServiceWorkerHarness({
   const debuggerEventListeners = [];
   const debuggerDetachListeners = [];
   const postedMessages = [];
+  const nativeMessageListeners = [];
+  const nativeDisconnectListeners = [];
   const tabListeners = {
     created: [],
     updated: [],
@@ -32,12 +35,43 @@ async function loadServiceWorkerHarness({
   let nextTabId = tab.id + 1;
   let activeTabId = tab.id;
   const nativePort = {
-    onMessage: { addListener() {} },
-    onDisconnect: { addListener() {} },
+    onMessage: {
+      addListener(listener) {
+        nativeMessageListeners.push(listener);
+      }
+    },
+    onDisconnect: {
+      addListener(listener) {
+        nativeDisconnectListeners.push(listener);
+      }
+    },
     postMessage(message) {
       postedMessages.push(message);
+      if (message.type === "hello") {
+        const bridgeStatus = {
+          connected: true,
+          version: message.version,
+          port: message.bridgePort,
+          host: "127.0.0.1",
+          httpBaseUrl: `http://127.0.0.1:${message.bridgePort}`,
+          browserWebSocketUrl: `ws://127.0.0.1:${message.bridgePort}/devtools/browser/test`
+        };
+        queueMicrotask(() => {
+          for (const listener of nativeMessageListeners) {
+            listener({
+              type: "event",
+              event: "bridgeStatus",
+              payload: bridgeStatus
+            });
+          }
+        });
+      }
     },
-    disconnect() {}
+    disconnect() {
+      for (const listener of nativeDisconnectListeners) {
+        listener();
+      }
+    }
   };
   const chrome = {
     runtime: {
@@ -53,6 +87,21 @@ async function loadServiceWorkerHarness({
         }
       },
       lastError: null
+    },
+    storage: {
+      local: {
+        async get(key) {
+          if (typeof key === "string") {
+            return { [key]: storage.get(key) };
+          }
+          return Object.fromEntries(storage.entries());
+        },
+        async set(items) {
+          for (const [key, value] of Object.entries(items)) {
+            storage.set(key, value);
+          }
+        }
+      }
     },
     action: {
       async setIcon() {},
@@ -140,11 +189,19 @@ async function loadServiceWorkerHarness({
       async update() {}
     }
   };
+  const storage = new Map();
+  if (storedBridgeSettings !== undefined) {
+    storage.set("bridgeSettings", storedBridgeSettings);
+  }
 
   const context = vm.createContext({
     chrome,
     console,
     crypto,
+    navigator: {
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    },
     OffscreenCanvas: class {
       constructor(size) {
         this.size = size;
@@ -180,6 +237,7 @@ async function loadServiceWorkerHarness({
     },
     nativePort,
     postedMessages,
+    storage,
     listeners: {
       runtime: runtimeListeners,
       debuggerEvent: debuggerEventListeners,
@@ -421,4 +479,34 @@ test("service worker falls back to synthetic load events when internal tabs do n
   assert.ok(methods.includes("Page.domContentEventFired"));
   assert.ok(methods.includes("Page.loadEventFired"));
   assert.equal(harness.state.pendingInternalNavigations.size, 0);
+});
+
+test("service worker starts the native host with the persisted bridge port", async () => {
+  const harness = await loadServiceWorkerHarness({
+    storedBridgeSettings: { port: 9333 }
+  });
+
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "start-host" }, null, resolve);
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(harness.postedMessages[0].bridgePort, 9333);
+  assert.equal(response.state.settings.port, 9333);
+});
+
+test("service worker persists bridge port updates for future restarts", async () => {
+  const harness = await loadServiceWorkerHarness();
+
+  await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "set-port", port: "9444" }, null, resolve);
+  });
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "start-host" }, null, resolve);
+  });
+
+  assert.equal(harness.storage.get("bridgeSettings").port, 9444);
+  assert.equal(response.ok, true);
+  assert.equal(harness.postedMessages[0].bridgePort, 9444);
+  assert.equal(response.state.settings.port, 9444);
 });
