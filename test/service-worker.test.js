@@ -8,6 +8,7 @@ const serviceWorkerPath = path.resolve(process.cwd(), "extension", "service-work
 
 async function loadServiceWorkerHarness({
   tab = { id: 1, url: "about:blank", title: "Blank" },
+  windows = undefined,
   storedBridgeSettings = undefined,
   debuggerSendCommand = async () => {
     throw new Error("Debugger command should not have been called");
@@ -31,9 +32,44 @@ async function loadServiceWorkerHarness({
     updated: [],
     removed: []
   };
-  const tabs = new Map([[tab.id, { ...tab }]]);
-  let nextTabId = tab.id + 1;
+  const windowMap = new Map();
+  const seedWindows =
+    windows ??
+    [
+      {
+        id: tab.windowId ?? 1,
+        focused: true,
+        type: "normal",
+        tabs: [{ windowId: tab.windowId ?? 1, index: 0, active: true, ...tab }]
+      }
+    ];
+  const tabs = new Map();
+  let nextTabId = 1;
   let activeTabId = tab.id;
+
+  for (const seedWindow of seedWindows) {
+    const normalizedWindow = {
+      id: seedWindow.id,
+      focused: Boolean(seedWindow.focused),
+      type: seedWindow.type ?? "normal",
+      tabs: []
+    };
+    for (const seedTab of seedWindow.tabs ?? []) {
+      const normalizedTab = {
+        windowId: seedWindow.id,
+        index: seedTab.index ?? normalizedWindow.tabs.length,
+        active: Boolean(seedTab.active),
+        ...seedTab
+      };
+      tabs.set(normalizedTab.id, normalizedTab);
+      normalizedWindow.tabs.push(normalizedTab);
+      if (normalizedTab.active) {
+        activeTabId = normalizedTab.id;
+      }
+      nextTabId = Math.max(nextTabId, normalizedTab.id + 1);
+    }
+    windowMap.set(normalizedWindow.id, normalizedWindow);
+  }
   const nativePort = {
     onMessage: {
       addListener(listener) {
@@ -143,26 +179,50 @@ async function loadServiceWorkerHarness({
         }
         if (updateProperties.active) {
           activeTabId = tabId;
+          const window = windowMap.get(currentTab.windowId);
+          for (const sibling of window?.tabs ?? []) {
+            sibling.active = sibling.id === tabId;
+          }
         }
         return { ...currentTab };
       },
       async create(createProperties) {
+        const windowId = createProperties.windowId ?? 1;
+        const window = windowMap.get(windowId) ?? {
+          id: windowId,
+          focused: true,
+          type: "normal",
+          tabs: []
+        };
+        windowMap.set(windowId, window);
         const createdTab = {
           id: nextTabId++,
           url: createProperties.url ?? "about:blank",
           title: createProperties.url === "chrome://extensions" ? "Extensions" : createProperties.url ?? "",
           active: Boolean(createProperties.active),
-          windowId: 1,
-          index: tabs.size
+          windowId,
+          index: window.tabs.length
         };
         tabs.set(createdTab.id, createdTab);
+        window.tabs.push(createdTab);
         if (createdTab.active) {
           activeTabId = createdTab.id;
+          for (const sibling of window.tabs) {
+            sibling.active = sibling.id === createdTab.id;
+          }
         }
         return { ...createdTab };
       },
       async remove(tabId) {
+        const removedTab = tabs.get(tabId);
         tabs.delete(tabId);
+        const window = windowMap.get(removedTab?.windowId);
+        if (window) {
+          window.tabs = window.tabs.filter((candidate) => candidate.id !== tabId);
+          window.tabs.forEach((candidate, index) => {
+            candidate.index = index;
+          });
+        }
       },
       async reload(tabId) {
         assert.equal(tabs.has(tabId), true);
@@ -186,6 +246,17 @@ async function loadServiceWorkerHarness({
     windows: {
       WINDOW_ID_CURRENT: 1,
       WINDOW_ID_NONE: -1,
+      async getAll(getInfo) {
+        const allowedTypes = new Set(getInfo?.windowTypes ?? []);
+        return [...windowMap.values()]
+          .filter((window) => allowedTypes.size === 0 || allowedTypes.has(window.type))
+          .map((window) => ({
+            id: window.id,
+            focused: window.focused,
+            type: window.type,
+            tabs: getInfo?.populate ? window.tabs.map((value) => ({ ...value })) : undefined
+          }));
+      },
       async update() {}
     }
   };
@@ -247,7 +318,7 @@ async function loadServiceWorkerHarness({
   };
 }
 
-test("service worker opens a new tab for browser-internal navigation", async () => {
+test("service worker keeps browser-internal navigation on the current tab", async () => {
   const harness = await loadServiceWorkerHarness({
     tab: { id: 7, url: "about:blank", title: "Blank" }
   });
@@ -266,9 +337,10 @@ test("service worker opens a new tab for browser-internal navigation", async () 
 
   assert.equal(harness.currentTab.url, "chrome://extensions");
   assert.equal(harness.currentTab.title, "Extensions");
-  assert.match(result.frameId, /^frame-8$/);
+  assert.match(result.frameId, /^frame-7$/);
   assert.match(result.loaderId, /^[0-9a-f-]+$/i);
-  assert.equal(harness.state.sessions.get(sessionId).tabId, 8);
+  assert.equal(harness.state.sessions.get(sessionId).tabId, 7);
+  assert.equal(harness.tabs.size, 1);
 });
 
 test("service worker synthesizes location and title for browser-internal pages", async () => {
@@ -355,6 +427,31 @@ test("service worker keeps the root session alive across internal-page debugger 
       }
     })
   );
+});
+
+test("service worker treats Page.enable as a no-op for internal pages", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 15, url: "chrome://extensions", title: "Extensions" },
+    debuggerSendCommand: async (debuggee, method, params) => {
+      sentCommands.push({ debuggee, method, params });
+      throw new Error("Debugger command should not have been called");
+    }
+  });
+  const sessionId = "root-session";
+  harness.state.sessions.set(sessionId, {
+    tabId: 15,
+    targetId: harness.makePageTargetId(15),
+    root: true
+  });
+
+  const result = await harness.sendCommand({
+    method: "Page.enable",
+    sessionId
+  });
+
+  assert.equal(JSON.stringify(result), "{}");
+  assert.deepEqual(sentCommands, []);
 });
 
 test("service worker ignores source-tab detaches during internal-page retargeting", async () => {
@@ -509,4 +606,44 @@ test("service worker persists bridge port updates for future restarts", async ()
   assert.equal(response.ok, true);
   assert.equal(harness.postedMessages[0].bridgePort, 9444);
   assert.equal(response.state.settings.port, 9444);
+});
+
+test("service worker lists tabs in focused-window order and skips non-normal windows", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 3,
+        focused: false,
+        type: "normal",
+        tabs: [
+          { id: 31, url: "https://three.example/1", title: "Three One", index: 0, active: true },
+          { id: 32, url: "https://three.example/2", title: "Three Two", index: 1, active: false }
+        ]
+      },
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 11, url: "https://one.example/1", title: "One One", index: 0, active: false },
+          { id: 12, url: "https://one.example/2", title: "One Two", index: 1, active: true }
+        ]
+      },
+      {
+        id: 9,
+        focused: false,
+        type: "popup",
+        tabs: [{ id: 91, url: "chrome-extension://popup", title: "Popup", index: 0, active: true }]
+      }
+    ]
+  });
+
+  const targets = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "refresh-targets" }, null, (response) => resolve(response.targets));
+  });
+
+  assert.deepEqual(
+    targets.map((target) => target.tabId),
+    [11, 12, 31, 32]
+  );
 });

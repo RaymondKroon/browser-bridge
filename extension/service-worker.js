@@ -78,6 +78,14 @@ const DEFAULT_BRIDGE_PORT = 9222;
 const DEFAULT_BRIDGE_SETTINGS = Object.freeze({
   port: DEFAULT_BRIDGE_PORT
 });
+const INTERNAL_PAGE_NOOP_METHODS = new Set([
+  "Page.enable",
+  "Runtime.enable",
+  "Accessibility.enable",
+  "Network.enable",
+  "DOM.enable",
+  "Log.enable"
+]);
 const ACTION_COLORS = {
   connected: "#16a34a",
   disconnected: "#6b7280",
@@ -386,11 +394,18 @@ async function stopHost({ clearLastError = true } = {}) {
 }
 
 async function listTargets() {
-  const tabs = await chrome.tabs.query({});
-  return tabs
-    .filter((tab) => typeof tab.id === "number")
-    .sort(compareTabsForDiscovery)
-    .map((tab) => buildTargetInfo(tab));
+  const windows = await chrome.windows.getAll({
+    populate: true,
+    windowTypes: ["normal"]
+  });
+  return windows
+    .sort(compareWindowsForDiscovery)
+    .flatMap((window) =>
+      (window.tabs ?? [])
+        .filter((tab) => typeof tab.id === "number")
+        .sort(compareTabsForDiscovery)
+        .map((tab) => buildTargetInfo(tab))
+    );
 }
 
 function buildTargetInfo(tab) {
@@ -405,21 +420,19 @@ function buildTargetInfo(tab) {
   };
 }
 
+function compareWindowsForDiscovery(left, right) {
+  if (Boolean(left.focused) !== Boolean(right.focused)) {
+    return left.focused ? -1 : 1;
+  }
+
+  if ((left.id ?? 0) !== (right.id ?? 0)) {
+    return (left.id ?? 0) - (right.id ?? 0);
+  }
+
+  return 0;
+}
+
 function compareTabsForDiscovery(left, right) {
-  if (Boolean(left.active) !== Boolean(right.active)) {
-    return left.active ? -1 : 1;
-  }
-
-  const leftFocused = left.windowId === chrome.windows.WINDOW_ID_CURRENT;
-  const rightFocused = right.windowId === chrome.windows.WINDOW_ID_CURRENT;
-  if (leftFocused !== rightFocused) {
-    return leftFocused ? -1 : 1;
-  }
-
-  if ((left.windowId ?? 0) !== (right.windowId ?? 0)) {
-    return (left.windowId ?? 0) - (right.windowId ?? 0);
-  }
-
   return (left.index ?? 0) - (right.index ?? 0);
 }
 
@@ -706,36 +719,6 @@ function clearPendingInternalNavigation(tabId) {
   state.internalNavigationTabs.delete(tabId);
 }
 
-async function createInternalNavigationTab(url) {
-  const tab = await chrome.tabs.create({
-    url,
-    active: true
-  });
-
-  if (typeof tab.id !== "number") {
-    throw createError(-32603, "Browser did not return a tab id");
-  }
-
-  return tab;
-}
-
-async function retargetRootSession(sessionId, nextTabId) {
-  const session = lookupSession(sessionId);
-  if (!session.root) {
-    throw createError(-32602, "Browser-internal navigation requires a top-level page session");
-  }
-
-  const previousTabId = session.tabId;
-  const previousAttachment = state.rootAttachments.get(previousTabId);
-  previousAttachment?.rootSessions.delete(sessionId);
-
-  session.tabId = nextTabId;
-  session.targetId = makePageTargetId(nextTabId);
-
-  await cleanupTabAttachment(previousTabId);
-  return session;
-}
-
 async function maybeHandleBrowserInternalCommand({ tabId, targetId, method, params, sessionId }) {
   const currentTab = await chrome.tabs.get(tabId);
   const currentUrl = currentTab.url ?? "about:blank";
@@ -746,29 +729,23 @@ async function maybeHandleBrowserInternalCommand({ tabId, targetId, method, para
       return null;
     }
 
-    const nextTab = await createInternalNavigationTab(nextUrl);
-    const nextTabId = nextTab.id;
-    if (sessionId) {
-      state.internalNavigationTabs.add(tabId);
-      state.internalNavigationTabs.add(nextTabId);
-      await retargetRootSession(sessionId, nextTabId);
-    }
-
+    state.internalNavigationTabs.add(tabId);
+    await chrome.tabs.update(tabId, { url: nextUrl, active: true });
     const navigation = {
-      frameId: getSyntheticFrameId(nextTabId),
+      frameId: getSyntheticFrameId(tabId),
       loaderId: crypto.randomUUID(),
       url: nextUrl,
       committed: false,
       fallbackTimer: null
     };
     navigation.fallbackTimer = setTimeout(() => {
-      if (!state.pendingInternalNavigations.has(nextTabId)) {
+      if (!state.pendingInternalNavigations.has(tabId)) {
         return;
       }
 
-      finalizePendingInternalNavigation(nextTabId, navigation);
+      finalizePendingInternalNavigation(tabId, navigation);
     }, INTERNAL_NAVIGATION_FALLBACK_MS);
-    state.pendingInternalNavigations.set(nextTabId, navigation);
+    state.pendingInternalNavigations.set(tabId, navigation);
     return {
       frameId: navigation.frameId,
       loaderId: navigation.loaderId
@@ -777,6 +754,10 @@ async function maybeHandleBrowserInternalCommand({ tabId, targetId, method, para
 
   if (!isBrowserInternalUrl(currentUrl)) {
     return null;
+  }
+
+  if (INTERNAL_PAGE_NOOP_METHODS.has(method)) {
+    return {};
   }
 
   switch (method) {
@@ -1047,7 +1028,9 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
   for (const [sessionId, session] of state.sessions.entries()) {
     if (session.tabId === source.tabId) {
-      state.sessions.delete(sessionId);
+      if (!wasInternalNavigation || !session.root) {
+        state.sessions.delete(sessionId);
+      }
     }
   }
 
