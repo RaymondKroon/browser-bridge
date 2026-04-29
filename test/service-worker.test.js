@@ -454,6 +454,67 @@ test("service worker treats Page.enable as a no-op for internal pages", async ()
   assert.deepEqual(sentCommands, []);
 });
 
+test("service worker keeps child sessions bound to the parent tab when attached events report a different tab id", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 19, url: "about:blank", title: "Blank" },
+    debuggerSendCommand: async (debuggee, method, params) => {
+      sentCommands.push({ debuggee, method, params });
+      return method === "Page.navigate" ? { frameId: "frame-19", loaderId: "loader-19" } : {};
+    }
+  });
+  const rootSessionId = "root-session";
+  harness.state.sessions.set(rootSessionId, {
+    tabId: 19,
+    targetId: harness.makePageTargetId(19),
+    root: true
+  });
+  harness.state.rootAttachments.set(19, {
+    tabId: 19,
+    targetId: harness.makePageTargetId(19),
+    rootSessions: new Set([rootSessionId]),
+    childSessions: new Set()
+  });
+
+  harness.listeners.debuggerEvent[0](
+    { tabId: 47940036, sessionId: rootSessionId },
+    "Target.attachedToTarget",
+    {
+      sessionId: "child-session",
+      targetInfo: {
+        targetId: "child-target",
+        type: "page",
+        title: "Blank",
+        url: "about:blank"
+      }
+    }
+  );
+
+  const childSession = harness.state.sessions.get("child-session");
+  assert.equal(childSession?.tabId, 19);
+  assert.equal(childSession?.targetId, "child-target");
+
+  const result = await harness.sendCommand({
+    method: "Page.navigate",
+    params: { url: "https://example.com" },
+    sessionId: "child-session"
+  });
+
+  assert.equal(JSON.stringify(result), JSON.stringify({
+    frameId: "frame-19",
+    loaderId: "loader-19"
+  }));
+  assert.equal(sentCommands.length, 1);
+  assert.equal(sentCommands[0].method, "Page.navigate");
+  assert.equal(JSON.stringify(sentCommands[0].debuggee), JSON.stringify({
+    tabId: 19,
+    sessionId: "child-session"
+  }));
+  assert.equal(JSON.stringify(sentCommands[0].params), JSON.stringify({
+    url: "https://example.com"
+  }));
+});
+
 test("service worker ignores source-tab detaches during internal-page retargeting", async () => {
   const harness = await loadServiceWorkerHarness({
     tab: { id: 21, url: "chrome://newtab/", title: "New Tab" }

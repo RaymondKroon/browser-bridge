@@ -993,11 +993,12 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   const targetId = makePageTargetId(source.tabId);
 
   if (method === "Target.attachedToTarget" && params?.sessionId) {
+    const parentSession = source.sessionId ? state.sessions.get(source.sessionId) : null;
     const attachment = state.rootAttachments.get(source.tabId);
     attachment?.childSessions.add(params.sessionId);
     state.sessions.set(params.sessionId, {
-      tabId: source.tabId,
-      targetId: params.targetInfo?.targetId ?? targetId,
+      tabId: parentSession?.tabId ?? attachment?.tabId ?? source.tabId,
+      targetId: params.targetInfo?.targetId ?? parentSession?.targetId ?? targetId,
       root: false
     });
   }
