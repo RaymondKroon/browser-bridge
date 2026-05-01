@@ -7,7 +7,7 @@ Proof of concept for reusing an already-running Chrome, Chromium, or Edge sessio
 1. `extension/` - unpacked MV3 extension with a service worker and popup UI.
 2. `native-host/` - native messaging entrypoint plus Windows and Linux launchers.
 3. `src/` - shared Node-side bridge and host implementation.
-4. `scripts/register-native-host.ps1` and `scripts/register-native-host.sh` - register the native host manifest on Windows and Linux.
+4. `scripts/register-native-host.ps1`, `scripts/unregister-native-host.ps1`, `scripts/register-native-host.sh`, and `scripts/unregister-native-host.sh` - register or unregister the native host manifest on Windows and Linux.
 5. `test/` - protocol tests plus an `agent-browser` smoke test that runs against a fake extension transport.
 
 ## Supported v1 surface
@@ -46,15 +46,27 @@ Unsupported methods return a structured JSON-RPC/CDP-style error with code `-326
 
    On Windows:
 
-   ```powershell
-   .\scripts\register-native-host.ps1 -ExtensionId <your-extension-id> -Browser Both
-   ```
+    ```powershell
+    .\scripts\register-native-host.ps1 -ExtensionId <your-extension-id> -Browser Both
+    ```
+
+    To remove those registrations later:
+
+    ```powershell
+    .\scripts\unregister-native-host.ps1 -Browser Both
+    ```
 
    On Linux:
 
-   ```bash
-   ./scripts/register-native-host.sh --extension-id <your-extension-id> --browser all
-   ```
+    ```bash
+    bash ./scripts/register-native-host.sh --extension-id <your-extension-id> --browser all
+    ```
+
+    To remove those registrations later:
+
+    ```bash
+    bash ./scripts/unregister-native-host.sh --browser all
+    ```
 
    The Linux script writes the manifest into the standard per-user native messaging directories for Chrome (`~/.config/google-chrome`), Chromium (`~/.config/chromium`), and Edge (`~/.config/microsoft-edge`).
 
@@ -85,6 +97,13 @@ npm run repair:agent-browser:force
 ```
 
 The repair command removes stale `*.pid`, `*.port`, and `*.stream` files from `~\.agent-browser` so the next raw `agent-browser` command can start cleanly.
+
+On Windows, you can also inspect or terminate live `agent-browser` processes:
+
+```powershell
+.\scripts\list-agent-browser-processes.ps1
+.\scripts\kill-agent-browser-processes.ps1
+```
 
 `agent-browser` expects a browser-level CDP websocket. The bridge therefore exposes:
 
