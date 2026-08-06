@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const MAX_BODY_BYTES = 1024;
-const RELOAD_PATH_PATTERN = /^\/development\/reload\/([a-p]{32})$/;
+const RELOAD_PATH = "/development/reload";
 
 function isLoopbackAddress(address) {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
@@ -34,10 +34,23 @@ async function readJsonBody(request) {
     chunks.push(chunk);
   }
 
-  const text = Buffer.concat(chunks).toString("utf8");
-  if (text !== "{}") {
-    throw new Error("Request body must be exactly an empty JSON object");
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("Request body must be valid JSON");
   }
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    Object.keys(payload).length !== 1 ||
+    !/^[a-p]{32}$/.test(payload.extensionId)
+  ) {
+    throw new Error("Request body must contain only a valid extensionId");
+  }
+  return payload;
 }
 
 export async function loadDevelopmentReloadConfig(configPath) {
@@ -100,11 +113,10 @@ export class DevelopmentReloadServer {
   async handleRequest(request, response) {
     try {
       const url = new URL(request.url, "http://127.0.0.1");
-      const pathMatch = RELOAD_PATH_PATTERN.exec(url.pathname);
       if (
         !isLoopbackAddress(request.socket.remoteAddress) ||
         request.method !== "POST" ||
-        !pathMatch ||
+        url.pathname !== RELOAD_PATH ||
         url.search ||
         request.headers["content-type"] !== "application/json"
       ) {
@@ -121,10 +133,8 @@ export class DevelopmentReloadServer {
         }
       }
 
-      await readJsonBody(request);
-      const result = await this.transport.request("reloadDevelopmentExtension", {
-        extensionId: pathMatch[1]
-      });
+      const payload = await readJsonBody(request);
+      const result = await this.transport.request("reloadDevelopmentExtension", payload);
       writeJson(response, 200, result);
     } catch (error) {
       const statusCode = error?.message === "Request body is too large" ? 413 : 400;

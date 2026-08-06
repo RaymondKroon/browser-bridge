@@ -19,8 +19,8 @@ test("development reload server accepts only its authenticated fixed request", a
   await server.start();
   const port = server.server.address().port;
 
-  const post = (headers, body = "{}") =>
-    fetch(`http://127.0.0.1:${port}/development/reload/hacmcjjofinfaaahgdhopnnnipgjigge`, {
+  const post = (headers, body = '{"extensionId":"hacmcjjofinfaaahgdhopnnnipgjigge"}') =>
+    fetch(`http://127.0.0.1:${port}/development/reload`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body
@@ -41,8 +41,26 @@ test("development reload server accepts only its authenticated fixed request", a
     assert.equal(unauthorized.status, 401);
     assert.equal(requests.length, 1);
 
-    const payloadRejected = await post({ authorization: `Bearer ${token}` }, '{"extensionId":"bad"}');
-    assert.equal(payloadRejected.status, 400);
+    const legacyPath = await fetch(
+      `http://127.0.0.1:${port}/development/reload/hacmcjjofinfaaahgdhopnnnipgjigge`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: '{"extensionId":"hacmcjjofinfaaahgdhopnnnipgjigge"}'
+      }
+    );
+    assert.equal(legacyPath.status, 404);
+    assert.equal(requests.length, 1);
+
+    const invalidId = await post({ authorization: `Bearer ${token}` }, '{"extensionId":"bad"}');
+    assert.equal(invalidId.status, 400);
+    assert.equal(requests.length, 1);
+
+    const extraPayloadProperty = await post(
+      { authorization: `Bearer ${token}` },
+      '{"extensionId":"hacmcjjofinfaaahgdhopnnnipgjigge","action":"reload"}'
+    );
+    assert.equal(extraPayloadProperty.status, 400);
     assert.equal(requests.length, 1);
   } finally {
     await server.stop();
@@ -65,8 +83,12 @@ test("development reload server defaults to unauthenticated loopback requests", 
   const port = server.server.address().port;
   try {
     const response = await fetch(
-      `http://127.0.0.1:${port}/development/reload/hacmcjjofinfaaahgdhopnnnipgjigge`,
-      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
+      `http://127.0.0.1:${port}/development/reload`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"extensionId":"hacmcjjofinfaaahgdhopnnnipgjigge"}'
+      }
     );
     assert.equal(response.status, 200);
     assert.deepEqual(requests, [

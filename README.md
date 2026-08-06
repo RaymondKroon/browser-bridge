@@ -76,12 +76,12 @@ The popup’s **Allowed reload IDs** list is stored in `chrome.storage.local` fo
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri http://127.0.0.1:9230/development/reload/hacmcjjofinfaaahgdhopnnnipgjigge `
+  -Uri http://127.0.0.1:9230/development/reload `
   -Headers @{ "Content-Type" = "application/json" } `
-  -Body "{}"
+  -Body '{"extensionId":"hacmcjjofinfaaahgdhopnnnipgjigge"}'
 ```
 
-The extension ID is part of the URI, but CDT Bridge accepts only IDs in the popup-managed allowed-ID list; another ID is rejected by the controller before any external message is sent. The endpoint accepts no message type or other command. Its `{ "ok": true }` response means the target acknowledged and scheduled reload; inspect Chrome for any subsequent extension load error. The endpoint is disabled when that configuration file is absent. Set `requireToken` to `true` and add a high-entropy `token` in the ignored configuration only when local-process authentication is desired.
+The JSON payload must contain exactly one field, `extensionId`. CDT Bridge accepts only IDs in the popup-managed allowed-ID list; another ID is rejected by the controller before any external message is sent. The endpoint accepts no message type or other command. Its `{ "ok": true }` response means the target acknowledged and scheduled reload; inspect Chrome for any subsequent extension load error. The endpoint is disabled when that configuration file is absent. Set `requireToken` to `true` and add a high-entropy `token` in the ignored configuration only when local-process authentication is desired.
 
    The bridge uses port `9222` by default. You can change it from the popup, and the extension persists that setting across browser restarts. If the configured port is busy, the native host falls back to a free local port.
 

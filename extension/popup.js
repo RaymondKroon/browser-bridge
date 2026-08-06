@@ -14,7 +14,7 @@ function updatePortInput(settings) {
 
 function copyReloadCurl(extensionId) {
   const authHeader = reloadRequiresToken ? ` -H 'Authorization: Bearer ${currentReloadToken}'` : "";
-  const curl = `curl --fail-with-body -X POST '${currentReloadEndpoint.replace(":extensionId", extensionId)}' -H 'Content-Type: application/json'${authHeader} --data '{}'`;
+  const curl = `curl --fail-with-body -X POST '${currentReloadEndpoint}' -H 'Content-Type: application/json'${authHeader} --data '{"extensionId":"${extensionId}"}'`;
   return navigator.clipboard.writeText(curl);
 }
 

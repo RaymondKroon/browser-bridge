@@ -143,7 +143,6 @@ Pi / watcher / local process
 curl --fail-with-body \
   -X POST http://127.0.0.1:<control-port>/development/reload \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <local-development-token>' \
   --data '{"extensionId":"<allowlisted-target-id>"}'
 ```
 
@@ -151,8 +150,8 @@ Requirements for this transport:
 
 1. Bind HTTP only to loopback (`127.0.0.1` and/or `::1`), or prefer a Unix-domain socket where practical. Never expose it on a LAN, public interface, or tunnel.
 2. If other local processes are not trusted, require a high-entropy development token from ignored local configuration. Do not place it in the extension bundle, source control, or a URL query string.
-3. Route only `POST /development/reload` (or an equivalently explicit development-only path), reject other methods, and impose a small request-body limit.
-4. Strictly validate the JSON schema and check the ID against the native-side/controller-side allowlist before forwarding it. Do not accept a message type, JavaScript, CDP method, or arbitrary extension command from the request.
+3. Route only `POST /development/reload` (or an equivalently explicit development-only path), reject other methods, and impose a small request-body limit. Keep the extension ID out of the URL path and query string.
+4. Strictly validate the JSON schema: require exactly `{ "extensionId": "<allowlisted-target-id>" }` with a valid extension-ID format, then check that ID against the native-side/controller-side allowlist before forwarding it. Do not accept a message type, JavaScript, CDP method, or arbitrary extension command from the request.
 5. Keep this control route separate from a CDP bridge. In particular, do not map arbitrary CDP `Runtime.evaluate` requests to cross-extension messaging.
 6. Return the controller's pre-reload acknowledgement only. `{ ok: true }` means that the target scheduled a reload, not that its updated code loaded successfully.
 

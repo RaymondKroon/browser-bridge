@@ -110,7 +110,7 @@ export async function runNativeHost() {
           enabled: true,
           host: "127.0.0.1",
           port: reloadConfig.port,
-          path: "/development/reload/:extensionId",
+          path: "/development/reload",
           requireToken: reloadConfig.requireToken
         }
       : { enabled: false }
