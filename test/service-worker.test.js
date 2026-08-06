@@ -12,14 +12,15 @@ async function loadServiceWorkerHarness({
   storedBridgeSettings = undefined,
   debuggerSendCommand = async () => {
     throw new Error("Debugger command should not have been called");
-  }
+  },
+  runtimeSendMessage = async () => ({ ok: true })
 } = {}) {
   let source = await readFile(serviceWorkerPath, "utf8");
   source = source.replace(
     /\nrefreshActionState\(\);\n\nvoid \(async \(\) => \{\n[\s\S]*?\n\}\)\(\)\.catch\(\(error\) => \{\n[\s\S]*?\n\}\);\n?$/,
     "\n"
   );
-  source += "\n;globalThis.__serviceWorkerTestExports = { sendCommand, state, makePageTargetId };\n";
+  source += "\n;globalThis.__serviceWorkerTestExports = { sendCommand, handleNativeRequest, state, makePageTargetId };\n";
 
   const runtimeListeners = [];
   const debuggerEventListeners = [];
@@ -113,6 +114,9 @@ async function loadServiceWorkerHarness({
     runtime: {
       connectNative() {
         return nativePort;
+      },
+      async sendMessage(extensionId, message) {
+        return await runtimeSendMessage(extensionId, message);
       },
       getManifest() {
         return { version: "0.1.0" };
@@ -706,5 +710,38 @@ test("service worker lists tabs in focused-window order and skips non-normal win
   assert.deepEqual(
     targets.map((target) => target.tabId),
     [11, 12, 31, 32]
+  );
+});
+
+test("service worker sends only the fixed development reload message to Helpers", async () => {
+  const sent = [];
+  const harness = await loadServiceWorkerHarness({
+    runtimeSendMessage: async (extensionId, message) => {
+      sent.push({ extensionId, message });
+      return { ok: true };
+    }
+  });
+
+  assert.equal(
+    (
+      await harness.handleNativeRequest({
+        action: "reloadDevelopmentExtension",
+        payload: { extensionId: "hacmcjjofinfaaahgdhopnnnipgjigge" }
+      })
+    ).ok,
+    true
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
+    {
+      extensionId: "hacmcjjofinfaaahgdhopnnnipgjigge",
+      message: { type: "cdt-bridge.dev-reload.v1" }
+    }
+  ]);
+  await assert.rejects(
+    harness.handleNativeRequest({
+      action: "reloadDevelopmentExtension",
+      payload: { extensionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+    }),
+    /requires an allowlisted development extension ID/
   );
 });

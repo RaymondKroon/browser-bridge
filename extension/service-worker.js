@@ -1,5 +1,10 @@
 const HOST_NAME = "com.cdt_bridge";
 const DEBUGGER_VERSION = "1.3";
+const DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY = "developmentReloadAllowedIds";
+const DEFAULT_DEV_RELOAD_ALLOWED_IDS = Object.freeze([
+  "hacmcjjofinfaaahgdhopnnnipgjigge"
+]);
+const DEV_RELOAD_MESSAGE_TYPE = "cdt-bridge.dev-reload.v1";
 const SUPPORTED_METHODS = new Set([
   "Browser.getWindowForTarget",
   "Browser.grantPermissions",
@@ -98,6 +103,8 @@ const state = {
   nativeConnected: false,
   stoppingHost: false,
   bridgeStatus: null,
+  developmentReloadToken: null,
+  developmentReloadAllowedIds: [...DEFAULT_DEV_RELOAD_ALLOWED_IDS],
   lastError: null,
   settings: { ...DEFAULT_BRIDGE_SETTINGS },
   settingsLoaded: false,
@@ -156,17 +163,41 @@ function normalizeBridgePort(rawValue, fallback = DEFAULT_BRIDGE_SETTINGS.port) 
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : fallback;
 }
 
+function normalizeDevelopmentReloadAllowedIds(value) {
+  if (!Array.isArray(value)) {
+    return [...DEFAULT_DEV_RELOAD_ALLOWED_IDS];
+  }
+  const ids = [...new Set(value)];
+  if (!ids.every((id) => typeof id === "string" && /^[a-p]{32}$/.test(id))) {
+    throw createError(-32602, "Allowed extension IDs must be 32 lowercase a-p characters");
+  }
+  return ids;
+}
+
 async function loadSettings() {
   if (state.settingsLoaded) {
     return state.settings;
   }
 
-  const stored = await chrome.storage.local.get(BRIDGE_SETTINGS_STORAGE_KEY);
+  const stored = await chrome.storage.local.get([
+    BRIDGE_SETTINGS_STORAGE_KEY,
+    DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY
+  ]);
   state.settings = {
     port: normalizeBridgePort(stored?.[BRIDGE_SETTINGS_STORAGE_KEY]?.port)
   };
+  state.developmentReloadAllowedIds = normalizeDevelopmentReloadAllowedIds(
+    stored?.[DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY]
+  );
   state.settingsLoaded = true;
   return state.settings;
+}
+
+async function saveDevelopmentReloadAllowedIds(value) {
+  const ids = normalizeDevelopmentReloadAllowedIds(value);
+  await chrome.storage.local.set({ [DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY]: ids });
+  state.developmentReloadAllowedIds = ids;
+  return ids;
 }
 
 async function saveSettings(nextSettings) {
@@ -293,6 +324,7 @@ async function ensureNativePort() {
   state.nativePort = port;
   state.nativeConnected = true;
   state.bridgeStatus = null;
+  state.developmentReloadToken = null;
   state.lastError = null;
   refreshActionState();
 
@@ -306,6 +338,7 @@ async function ensureNativePort() {
     state.nativeConnected = false;
     state.nativePort = null;
     state.bridgeStatus = null;
+    state.developmentReloadToken = null;
     state.lastError = wasStopping
       ? null
       : chrome.runtime.lastError?.message ?? "Native host disconnected";
@@ -367,6 +400,7 @@ async function stopHost({ clearLastError = true } = {}) {
     state.nativeConnected = false;
     state.stoppingHost = false;
     state.bridgeStatus = null;
+    state.developmentReloadToken = null;
     if (clearLastError) {
       state.lastError = null;
     }
@@ -379,6 +413,7 @@ async function stopHost({ clearLastError = true } = {}) {
   state.nativePort = null;
   state.nativeConnected = false;
   state.bridgeStatus = null;
+  state.developmentReloadToken = null;
   if (clearLastError) {
     state.lastError = null;
   }
@@ -894,7 +929,8 @@ async function getDiagnostics() {
     attachedTabs: [...state.rootAttachments.keys()],
     bridgeStatus: state.bridgeStatus,
     lastError: state.lastError,
-    settings: state.settings
+    settings: state.settings,
+    developmentReloadAllowedIds: state.developmentReloadAllowedIds
   };
 }
 
@@ -903,6 +939,27 @@ function getCapabilities() {
     protocolVersion: "1.3",
     methods: [...SUPPORTED_METHODS].sort()
   };
+}
+
+async function reloadDevelopmentExtension(payload) {
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    Object.keys(payload).length !== 1 ||
+    typeof payload.extensionId !== "string" ||
+    !state.developmentReloadAllowedIds.includes(payload.extensionId)
+  ) {
+    throw createError(-32602, "reloadDevelopmentExtension requires an allowlisted development extension ID");
+  }
+
+  const response = await chrome.runtime.sendMessage(payload.extensionId, {
+    type: DEV_RELOAD_MESSAGE_TYPE
+  });
+  if (!response?.ok) {
+    throw createError(-32603, response?.error ?? "Target did not acknowledge the development reload");
+  }
+  return { ok: true };
 }
 
 async function handleNativeRequest(message) {
@@ -927,6 +984,8 @@ async function handleNativeRequest(message) {
       return await getDiagnostics();
     case "getCapabilities":
       return getCapabilities();
+    case "reloadDevelopmentExtension":
+      return await reloadDevelopmentExtension(message.payload);
     default:
       throw createError(-32601, "Unknown native host action", {
         action: message.action
@@ -939,6 +998,10 @@ async function handleNativeMessage(message) {
     if (message.event === "bridgeStatus") {
       state.bridgeStatus = message.payload;
       refreshActionState();
+    } else if (message.event === "developmentReloadToken") {
+      state.developmentReloadToken = message.payload?.token ?? null;
+    } else if (message.event === "developmentReloadError") {
+      state.lastError = message.payload?.message ?? "Development reload host error";
     }
     return;
   }
@@ -1131,18 +1194,46 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           });
           return;
         }
+        case "get-popup-state":
+          // Keep popup startup independent of chrome.tabs/chrome.windows calls.
+          // Those calls can be slow while Chrome is restoring windows.
+          sendResponse({
+            ok: true,
+            state: await getDiagnostics(),
+            bridgeStatus: state.bridgeStatus,
+            settings: state.settings,
+            reloadToken: state.developmentReloadToken
+          });
+          return;
         case "get-state":
           sendResponse({
             ok: true,
             state: await getDiagnostics(),
             bridgeStatus: state.bridgeStatus,
             settings: state.settings,
+            reloadToken: state.developmentReloadToken,
             capabilities: getCapabilities(),
             targets: await listTargets()
           });
           return;
         case "refresh-targets":
           sendResponse({ ok: true, targets: await listTargets() });
+          return;
+        case "get-development-reload-token":
+          sendResponse({ ok: true, token: state.developmentReloadToken });
+          return;
+        case "regenerate-development-reload-token":
+          if (!state.nativePort) {
+            throw createError(-32000, "Native host is not connected");
+          }
+          postNativeMessage({ type: "developmentReloadControl", action: "regenerateToken" });
+          sendResponse({ ok: true });
+          return;
+        case "set-development-reload-allowed-ids":
+          sendResponse({
+            ok: true,
+            allowedExtensionIds: await saveDevelopmentReloadAllowedIds(message.extensionIds)
+          });
           return;
         default:
           sendResponse({

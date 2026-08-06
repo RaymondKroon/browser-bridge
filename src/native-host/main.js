@@ -1,6 +1,17 @@
+import { randomBytes } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { BRIDGE_VERSION, DEFAULT_BRIDGE_PORT } from "../bridge/constants.js";
 import { CdpBridgeServer } from "../bridge/cdp-bridge-server.js";
 import { NativeMessagingTransport } from "./native-messaging-transport.js";
+import {
+  DevelopmentReloadServer,
+  loadDevelopmentReloadConfig
+} from "./development-reload-server.js";
+
+const DEVELOPMENT_RELOAD_CONFIG_URL = new URL(
+  "../../native-host/development-reload.config.json",
+  import.meta.url
+);
 
 const INITIAL_HELLO_TIMEOUT_MS = 1000;
 
@@ -76,6 +87,16 @@ export async function runNativeHost() {
     parsePreferredPort(process.env.CDT_BRIDGE_PORT)
   );
   const bridge = await startBridgeServer({ transport, preferredPort });
+  const reloadConfig = await loadDevelopmentReloadConfig(DEVELOPMENT_RELOAD_CONFIG_URL);
+  const reloadServer = reloadConfig
+    ? await new DevelopmentReloadServer({ transport, config: reloadConfig }).start()
+    : null;
+
+  // The token stays out of bridgeStatus/diagnostics so CDP clients cannot read it.
+  // It is sent only across native messaging for the extension popup to display.
+  if (reloadConfig?.requireToken) {
+    transport.notify("developmentReloadToken", { token: reloadConfig.token });
+  }
 
   transport.notify("bridgeStatus", {
     connected: true,
@@ -83,15 +104,48 @@ export async function runNativeHost() {
     port: bridge.port,
     host: bridge.host,
     httpBaseUrl: bridge.httpBaseUrl,
-    browserWebSocketUrl: bridge.browserWebSocketUrl
+    browserWebSocketUrl: bridge.browserWebSocketUrl,
+    developmentReload: reloadServer
+      ? {
+          enabled: true,
+          host: "127.0.0.1",
+          port: reloadConfig.port,
+          path: "/development/reload/:extensionId",
+          requireToken: reloadConfig.requireToken
+        }
+      : { enabled: false }
+  });
+
+  transport.on("message", async (message) => {
+    if (
+      message?.type !== "developmentReloadControl" ||
+      message.action !== "regenerateToken" ||
+      !reloadConfig?.requireToken
+    ) {
+      return;
+    }
+    try {
+      const token = randomBytes(32).toString("hex");
+      reloadConfig.token = token;
+      await writeFile(DEVELOPMENT_RELOAD_CONFIG_URL, `${JSON.stringify(reloadConfig, null, 2)}\n`, {
+        mode: 0o600
+      });
+      transport.notify("developmentReloadToken", { token });
+    } catch (error) {
+      transport.notify("developmentReloadError", {
+        message: `Could not regenerate development reload token: ${error?.message ?? error}`
+      });
+    }
   });
 
   transport.on("disconnect", async () => {
+    await reloadServer?.stop();
     await bridge.stop();
     process.exit(0);
   });
 
   const shutdown = async () => {
+    await reloadServer?.stop();
     await bridge.stop();
     process.exit(0);
   };

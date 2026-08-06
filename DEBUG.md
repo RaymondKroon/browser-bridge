@@ -31,8 +31,15 @@ pkill agent-browser
 1. Open Chromium/Chrome/Edge.
 2. Go to `chrome://extensions`.
 3. Enable **Developer mode**.
-4. Load `extension/` as an unpacked extension.
-5. Copy the extension ID.
+4. Register the native host and print the stable ID without copying it manually:
+
+   ```bash
+   bash ./scripts/setup-development-install.sh --browser chromium
+   ```
+
+5. Load `extension/` as an unpacked extension.
+
+`extension/manifest.json` includes a development-only public key so this unpacked controller has a stable extension ID. A normal new install does not need `development-controller.pem`: Chrome derives the ID from the committed public key. That ignored local private key is only retained if you intentionally create a replacement key with `setup-development-install.sh --new-development-key`. Do not use a production signing key. Replacing the key assigns a new ID, requires re-registering the native host, and requires every target extension to trust the new controller ID.
 
 ## 3. Register the native host
 

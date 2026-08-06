@@ -18,5 +18,6 @@
   "action": {
     "default_title": "CDT Bridge",
     "default_popup": "popup.html"
-  }
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAutIc2HplZyDMTJO6HDwU/eAntH9+rMGeZUdQAl8W3pjemt205RtCpCZpuaf0enRtyTYAJtZo5zNLQDkrve3JxpdTEurBHcaLaApIywHQB/Oo8g3NufxbOYJjljZlpsxZBIcZnlHiYvyMDd7BfXX+cm4V+3avknOPNscXNodzcjSnZzKbo0/+qyhflnluHCl/z47aeIDJGOgxgWthz1XCM4uFfhH2nJ66efFsyBMtncyiZvijc7kCGQ2nA8RHzGfrgAFXGWT2gh2xLy4ETOwi5XG2Jas4GGij3CEsap01HdpM31y+OFKCUkFG9FbOKc18bItf/dIkVQRghnlGs3+llwIDAQAB"
 }

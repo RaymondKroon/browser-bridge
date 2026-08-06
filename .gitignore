@@ -1,2 +1,6 @@
 .idea
 node_modules
+
+# Local development-only key that gives the unpacked controller a stable ID.
+development-controller.pem
+native-host/development-reload.config.json

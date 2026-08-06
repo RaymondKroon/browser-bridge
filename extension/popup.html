@@ -10,7 +10,21 @@
       <h1>CDT Bridge</h1>
       <section class="panel">
         <div class="row"><span>Native host</span><strong id="host-status">Starting...</strong></div>
-        <div class="row"><span>Bridge</span><strong id="bridge-url">-</strong></div>
+        <div class="row"><span>Bridge</span><strong id="bridge-url" class="value">-</strong></div>
+        <div class="row"><span>Reload host</span><strong id="reload-host-status">Checking...</strong></div>
+        <div class="row"><span>Reload endpoint</span><strong id="reload-endpoint" class="value">-</strong></div>
+        <section id="reload-auth" hidden>
+          <div class="row"><span>Reload token</span><strong id="reload-token" class="value">-</strong></div>
+          <button id="regenerate-reload-token-button" type="button" class="secondary">Regenerate reload token</button>
+        </section>
+        <section class="field stack" aria-label="Allowed reload IDs">
+          <span>Allowed reload IDs</span>
+          <div id="reload-allowed-id-list" class="reload-id-list"></div>
+          <div class="add-reload-id-row">
+            <input id="new-reload-id" type="text" maxlength="32" spellcheck="false" placeholder="New extension ID">
+            <button id="add-reload-id-button" type="button" class="secondary">Add</button>
+          </div>
+        </section>
         <label class="field" for="bridge-port">
           <span>Port</span>
           <span class="field-control">

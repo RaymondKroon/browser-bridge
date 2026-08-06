@@ -38,31 +38,29 @@ Unsupported methods return a structured JSON-RPC/CDP-style error with code `-326
    npm install
    ```
 
-2. Load `extension/` as an unpacked extension in Chrome, Chromium, or Edge.
+2. On Linux, set up the development install. It derives the stable extension ID from the public key in the manifest, registers the native host, and creates an ignored loopback reload configuration; no manually copied ID is needed:
 
-3. Copy the extension ID from the browser's extensions page.
+   ```bash
+   bash ./scripts/setup-development-install.sh --browser chromium
+   ```
 
-4. Register the native host.
+   Use `--browser all` for every supported browser, or `--dry-run` to print the derived ID without changing native-host registration. Load `extension/` as an unpacked extension in Chrome, Chromium, or Edge after the script completes.
 
-   On Windows:
+   On Windows, use the PowerShell setup script. It derives the stable ID, registers the native host, and creates an ignored loopback development-reload configuration:
 
     ```powershell
-    .\scripts\register-native-host.ps1 -ExtensionId <your-extension-id> -Browser Both
+    .\scripts\setup-development-install.ps1 -Browser Both
     ```
 
-    To remove those registrations later:
+   Reload or load `extension/` as unpacked after running the script.
+
+    To remove registrations later:
 
     ```powershell
     .\scripts\unregister-native-host.ps1 -Browser Both
     ```
 
-   On Linux:
-
-    ```bash
-    bash ./scripts/register-native-host.sh --extension-id <your-extension-id> --browser all
-    ```
-
-    To remove those registrations later:
+   On Linux, remove registrations later with:
 
     ```bash
     bash ./scripts/unregister-native-host.sh --browser all
@@ -70,7 +68,20 @@ Unsupported methods return a structured JSON-RPC/CDP-style error with code `-326
 
    The Linux script writes the manifest into the standard per-user native messaging directories for Chrome (`~/.config/google-chrome`), Chromium (`~/.config/chromium`), and Edge (`~/.config/microsoft-edge`).
 
-5. Open the extension popup and confirm the bridge status shows a local URL such as `http://127.0.0.1:<bridge-port>`.
+3. Open the extension popup and confirm the bridge status shows a local URL such as `http://127.0.0.1:<bridge-port>`.
+
+### Development extension reload
+
+The popup’s **Allowed reload IDs** list is stored in `chrome.storage.local` for this CDT Bridge installation. Helpers (`hacmcjjofinfaaahgdhopnnnipgjigge`) is the initial development entry; add other cooperating development-extension IDs in the popup and click **Save allowed IDs**. CDT Bridge sends only `{ "type": "cdt-bridge.dev-reload.v1" }`. When `native-host/development-reload.config.json` exists, the native host additionally binds a separate authenticated control endpoint only to `127.0.0.1`:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:9230/development/reload/hacmcjjofinfaaahgdhopnnnipgjigge `
+  -Headers @{ "Content-Type" = "application/json" } `
+  -Body "{}"
+```
+
+The extension ID is part of the URI, but CDT Bridge accepts only IDs in the popup-managed allowed-ID list; another ID is rejected by the controller before any external message is sent. The endpoint accepts no message type or other command. Its `{ "ok": true }` response means the target acknowledged and scheduled reload; inspect Chrome for any subsequent extension load error. The endpoint is disabled when that configuration file is absent. Set `requireToken` to `true` and add a high-entropy `token` in the ignored configuration only when local-process authentication is desired.
 
    The bridge uses port `9222` by default. You can change it from the popup, and the extension persists that setting across browser restarts. If the configured port is busy, the native host falls back to a free local port.
 
