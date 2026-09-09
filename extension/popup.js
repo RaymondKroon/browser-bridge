@@ -2,6 +2,7 @@ let currentReloadToken = null;
 let reloadRequiresToken = false;
 let currentReloadEndpoint = null;
 let currentAllowedIds = [];
+let currentTabAccess = [];
 
 async function send(action, extra = {}) {
   return chrome.runtime.sendMessage({ action, ...extra });
@@ -59,6 +60,57 @@ function updateAllowedIds(ids) {
   });
 }
 
+async function persistTabAccess(entries) {
+  const response = await send("set-tab-access-allowlist", { entries });
+  if (!response.ok) {
+    throw new Error(response.error?.message ?? "Could not save tab access allowlist");
+  }
+  updateTabAccess(response.tabAccessAllowlist);
+}
+
+function updateTabAccess(entries) {
+  currentTabAccess = entries ?? [];
+  const list = document.getElementById("tab-access-list");
+  list.replaceChildren();
+  if (currentTabAccess.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "tab-access-empty";
+    empty.textContent = "No URLs allowed. Blocked URLs are added here automatically (off).";
+    list.append(empty);
+    return;
+  }
+
+  currentTabAccess.forEach((entry, index) => {
+    const row = document.createElement("div");
+    row.className = "tab-access-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = entry.enabled;
+    checkbox.title = entry.enabled ? "Allowed" : "Blocked (toggle to allow)";
+    checkbox.addEventListener("change", () => {
+      const next = [...currentTabAccess];
+      next[index] = { ...next[index], enabled: checkbox.checked };
+      void persistTabAccess(next);
+    });
+    const input = document.createElement("input");
+    input.type = "text";
+    input.spellcheck = false;
+    input.value = entry.url;
+    input.addEventListener("change", () => {
+      const next = [...currentTabAccess];
+      next[index] = { ...next[index], url: input.value.trim() };
+      void persistTabAccess(next);
+    });
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "secondary small-button";
+    deleteButton.textContent = "Delete";
+    deleteButton.addEventListener("click", () => void persistTabAccess(currentTabAccess.filter((_, item) => item !== index)));
+    row.append(checkbox, input, deleteButton);
+    list.append(row);
+  });
+}
+
 function updateConnectionButton(state) {
   const button = document.getElementById("connection-button");
   const bridgeConnected = Boolean(state.bridgeStatus);
@@ -88,8 +140,12 @@ async function refresh() {
   document.getElementById("reload-auth").hidden = !reloadRequiresToken;
   document.getElementById("reload-token").textContent = currentReloadToken ?? "-";
   document.getElementById("last-error").textContent = response.state.lastError ?? "-";
+  document.getElementById("spawned-closed").textContent = `${response.state.spawnedTabsClosed ?? 0}`;
+  const lastClose = (response.state.lastSpawnedCloses ?? [])[response.state.lastSpawnedCloses?.length - 1];
+  document.getElementById("spawned-last").textContent = lastClose ? `${lastClose.url} (opener ${lastClose.openerTabId ?? "?"})` : "-";
   updatePortInput(response.settings ?? response.state.settings);
   updateAllowedIds(response.state.developmentReloadAllowedIds);
+  updateTabAccess(response.state.tabAccessAllowlist);
   updateConnectionButton(response.state);
 }
 
@@ -123,6 +179,16 @@ async function addAllowedId() {
   input.value = "";
 }
 
+async function addTabAccessUrl() {
+  const input = document.getElementById("new-tab-access-url");
+  const url = input.value.trim();
+  if (!url || currentTabAccess.some((entry) => entry.url === url)) {
+    return;
+  }
+  await persistTabAccess([...currentTabAccess, { url, enabled: true }]);
+  input.value = "";
+}
+
 async function savePort() {
   const button = document.getElementById("save-port-button");
   const port = document.getElementById("bridge-port").value;
@@ -142,6 +208,15 @@ document.getElementById("regenerate-reload-token-button").addEventListener("clic
 });
 document.getElementById("add-reload-id-button").addEventListener("click", () => {
   void addAllowedId();
+});
+document.getElementById("add-tab-access-button").addEventListener("click", () => {
+  void addTabAccessUrl();
+});
+document.getElementById("new-tab-access-url").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void addTabAccessUrl();
+  }
 });
 document.getElementById("new-reload-id").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {

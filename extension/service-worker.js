@@ -83,6 +83,8 @@ const DEFAULT_BRIDGE_PORT = 9222;
 const DEFAULT_BRIDGE_SETTINGS = Object.freeze({
   port: DEFAULT_BRIDGE_PORT
 });
+const TAB_ACCESS_STORAGE_KEY = "tabAccessAllowlist";
+const TAB_ACCESS_BLOCKED_CODE = -32003;
 const INTERNAL_PAGE_NOOP_METHODS = new Set([
   "Page.enable",
   "Runtime.enable",
@@ -107,9 +109,13 @@ const state = {
   developmentReloadAllowedIds: [...DEFAULT_DEV_RELOAD_ALLOWED_IDS],
   lastError: null,
   settings: { ...DEFAULT_BRIDGE_SETTINGS },
+  tabAccessAllowlist: [],
   settingsLoaded: false,
   rootAttachments: new Map(),
   sessions: new Map(),
+  spawnedTabs: new Map(),
+  spawnedTabsClosed: 0,
+  lastSpawnedCloses: [],
   expectedDetachTabs: new Set(),
   pendingInternalNavigations: new Map(),
   internalNavigationTabs: new Set()
@@ -181,7 +187,8 @@ async function loadSettings() {
 
   const stored = await chrome.storage.local.get([
     BRIDGE_SETTINGS_STORAGE_KEY,
-    DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY
+    DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY,
+    TAB_ACCESS_STORAGE_KEY
   ]);
   state.settings = {
     port: normalizeBridgePort(stored?.[BRIDGE_SETTINGS_STORAGE_KEY]?.port)
@@ -189,6 +196,7 @@ async function loadSettings() {
   state.developmentReloadAllowedIds = normalizeDevelopmentReloadAllowedIds(
     stored?.[DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY]
   );
+  state.tabAccessAllowlist = normalizeTabAccessAllowlist(stored?.[TAB_ACCESS_STORAGE_KEY]);
   state.settingsLoaded = true;
   return state.settings;
 }
@@ -198,6 +206,260 @@ async function saveDevelopmentReloadAllowedIds(value) {
   await chrome.storage.local.set({ [DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY]: ids });
   state.developmentReloadAllowedIds = ids;
   return ids;
+}
+
+function normalizeTabAccessAllowlist(value) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw createError(-32602, "Tab access allowlist must be an array of { url, enabled } entries");
+  }
+
+  const seen = new Set();
+  const entries = [];
+  for (const item of value) {
+    const url = typeof item === "string" ? item : item?.url;
+    const enabled = typeof item === "string" ? true : item?.enabled === true;
+    if (typeof url !== "string") {
+      throw createError(-32602, "Tab access allowlist entries must contain a url string");
+    }
+    const trimmed = url.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    entries.push({ url: trimmed, enabled });
+  }
+  return entries;
+}
+
+function escapeRegExpPart(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const allowlistMatcherCache = new Map();
+
+function compileAllowlistPattern(pattern) {
+  const schemeIndex = pattern.indexOf("://");
+  const afterScheme = schemeIndex === -1 ? -1 : schemeIndex + 3;
+  let hostEnd = -1;
+  if (schemeIndex !== -1) {
+    const slashIndex = pattern.indexOf("/", afterScheme);
+    const colonIndex = pattern.indexOf(":", afterScheme);
+    const bounds = [slashIndex, colonIndex].filter((index) => index !== -1);
+    hostEnd = bounds.length > 0 ? Math.min(...bounds) : pattern.length;
+  }
+
+  let regex = "^";
+  const parts = pattern.split("*");
+  const starPositions = [];
+  for (let i = 0; i < pattern.length; i += 1) {
+    if (pattern[i] === "*") {
+      starPositions.push(i);
+    }
+  }
+  for (let i = 0; i < parts.length; i += 1) {
+    if (i > 0) {
+      const starAt = starPositions[i - 1];
+      const starInHost = starAt >= afterScheme && starAt < hostEnd;
+      if (starInHost) {
+        // A host wildcard matches whole labels only (so "*.example.com" never
+        // matches "example.com.evil.com"). When the literal part keeps its
+        // leading dot, fold it into the label group so the apex domain
+        // ("example.com") still matches.
+        regex += "(?:[a-z0-9-]+\\.)*";
+        if (parts[i].startsWith(".")) {
+          parts[i] = parts[i].slice(1);
+        }
+      } else {
+        regex += ".*";
+      }
+    }
+    regex += escapeRegExpPart(parts[i]);
+  }
+
+  // Patterns match the start of a URL; require a URL boundary so that
+  // "https://nos.nl" does not match "https://nos.nlevil.com".
+  if (!pattern.endsWith("*")) {
+    regex += "(?=[/:?#]|$)";
+  }
+
+  return new RegExp(regex, "i");
+}
+
+function getAllowlistMatcher(pattern) {
+  let matcher = allowlistMatcherCache.get(pattern);
+  if (!matcher) {
+    matcher = compileAllowlistPattern(pattern);
+    allowlistMatcherCache.set(pattern, matcher);
+  }
+  return matcher;
+}
+
+function matchesAllowlistPattern(pattern, url) {
+  return getAllowlistMatcher(pattern).test(url);
+}
+
+function isTabUrlAllowed(url) {
+  if (typeof url !== "string" || url.length === 0) {
+    return false;
+  }
+  return state.tabAccessAllowlist.some(
+    (entry) => entry.enabled && matchesAllowlistPattern(entry.url, url)
+  );
+}
+
+async function saveTabAccessAllowlist(value) {
+  const entries = normalizeTabAccessAllowlist(value);
+  await chrome.storage.local.set({ [TAB_ACCESS_STORAGE_KEY]: entries });
+  state.tabAccessAllowlist = entries;
+  return entries;
+}
+
+async function autoAddBlockedTabUrl(url) {
+  if (typeof url !== "string" || url.length === 0) {
+    return;
+  }
+  if (state.tabAccessAllowlist.some((entry) => entry.url === url)) {
+    return;
+  }
+
+  const entries = [...state.tabAccessAllowlist, { url, enabled: false }];
+  state.tabAccessAllowlist = entries;
+  try {
+    await chrome.storage.local.set({ [TAB_ACCESS_STORAGE_KEY]: entries });
+  } catch {
+    // Keep the in-memory entry even if persistence fails; the popup can re-save it.
+  }
+}
+
+async function assertTabAccessAllowed(url) {
+  if (isTabUrlAllowed(url)) {
+    return;
+  }
+
+  // Auto-add the blocked URL (disabled) so the user can approve it in the popup.
+  await autoAddBlockedTabUrl(url);
+  throw createError(
+    TAB_ACCESS_BLOCKED_CODE,
+    `Tab access blocked: "${url}" is not on the allowlist. Approve this URL manually in the CDT Bridge popup before retrying.`,
+    { url, reason: "not-allowlisted" }
+  );
+}
+
+async function assertTabAccessForTab(tabId, { navigationUrl = null } = {}) {
+  const tab = await chrome.tabs.get(tabId);
+  await assertTabAccessAllowed(tab.url ?? "about:blank");
+  if (typeof navigationUrl === "string" && navigationUrl.length > 0) {
+    await assertTabAccessAllowed(navigationUrl);
+  }
+}
+
+function isTransientSpawnUrl(url) {
+  return (
+    !url ||
+    url === "about:blank" ||
+    url === "about:srcdoc" ||
+    /^chrome:\/\/newtab/i.test(url)
+  );
+}
+
+function policeSpawnedTab(tabId, url) {
+  if (!state.spawnedTabs.has(tabId) || isTransientSpawnUrl(url)) {
+    return;
+  }
+  if (isTabUrlAllowed(url)) {
+    return;
+  }
+  // Never auto-close browser-internal pages: the user must always be able to
+  // reach chrome://extensions & co. manually. Agent access to them is still
+  // gated by the command-level allowlist check.
+  if (isBrowserInternalUrl(url)) {
+    console.warn(`[cdt-bridge] kill-switch: leaving internal URL alone: ${url} (tab ${tabId})`);
+    return;
+  }
+
+  state.spawnedTabs.delete(tabId);
+  void (async () => {
+    // Record what was blocked so the user can approve it in the popup.
+    await autoAddBlockedTabUrl(url);
+    let openerTabId = null;
+    try {
+      openerTabId = (await chrome.tabs.get(tabId)).openerTabId ?? null;
+    } catch {
+      // The tab may have closed already.
+    }
+    console.warn(`[cdt-bridge] kill-switch: closing tab ${tabId} (opener ${openerTabId}) for blocked URL ${url}`);
+    state.lastSpawnedCloses.push({ url, tabId, openerTabId, at: new Date().toISOString() });
+    if (state.lastSpawnedCloses.length > 5) {
+      state.lastSpawnedCloses.shift();
+    }
+    try {
+      await chrome.tabs.remove(tabId);
+      state.spawnedTabsClosed += 1;
+    } catch {
+      // The tab may have closed already.
+    }
+  })();
+}
+
+function isAgentTab(tabId) {
+  if (typeof tabId !== "number") {
+    return false;
+  }
+  if (state.rootAttachments.has(tabId)) {
+    return true;
+  }
+  // A session alone (no debugger attach yet) still counts: the agent may
+  // command this tab at any moment.
+  for (const session of state.sessions.values()) {
+    if (session.tabId === tabId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function trackSpawnedTab(tab) {
+  if (typeof tab.id === "number" && isAgentTab(tab.openerTabId)) {
+    state.spawnedTabs.set(tab.id, true);
+    policeSpawnedTab(tab.id, tab.url);
+  }
+}
+
+async function handleFetchRequestPaused(source, params) {
+  const requestId = params?.requestId;
+  const request = params?.request ?? {};
+  const url = request.url;
+  const resourceType = request.resourceType ?? "other";
+
+  const allowed =
+    typeof url === "string" &&
+    (isTabUrlAllowed(url) || isBrowserInternalUrl(url));
+  if (!allowed) {
+    console.warn(`[cdt-bridge] fetch-gate: blocking ${resourceType} ${url} (tab ${source.tabId})`);
+  }
+  if (!allowed && resourceType === "document" && typeof url === "string") {
+    // Only auto-add navigations; blocked subresources would spam the list.
+    await autoAddBlockedTabUrl(url);
+  }
+
+  const debuggee = source.sessionId
+    ? { tabId: source.tabId, sessionId: source.sessionId }
+    : { tabId: source.tabId };
+  try {
+    if (allowed) {
+      await chrome.debugger.sendCommand(debuggee, "Fetch.continueRequest", { requestId });
+    } else {
+      await chrome.debugger.sendCommand(debuggee, "Fetch.failRequest", {
+        requestId,
+        errorReason: "BlockedByClient"
+      });
+    }
+  } catch {
+    // The tab or session may have gone away while the request was paused.
+  }
 }
 
 async function saveSettings(nextSettings) {
@@ -444,13 +706,15 @@ async function listTargets() {
 }
 
 function buildTargetInfo(tab) {
+  const url = tab.url ?? "about:blank";
   return {
     targetId: makePageTargetId(tab.id),
     tabId: tab.id,
     type: "page",
     title: tab.title ?? "",
-    url: tab.url ?? "about:blank",
+    url,
     attached: state.rootAttachments.has(tab.id),
+    blocked: !isTabUrlAllowed(url),
     faviconUrl: tab.favIconUrl ?? undefined
   };
 }
@@ -499,6 +763,13 @@ async function ensureDebuggerAttached(tabId) {
     );
   } catch {
     // Not every Chrome/Edge build will accept this before attach flows are fully active.
+  }
+
+  try {
+    // Gate every network request of this tab through the allowlist.
+    await chrome.debugger.sendCommand({ tabId }, "Fetch.enable", {});
+  } catch {
+    // Fetch gating is best-effort; the command-level checks still apply.
   }
 
   return attachment;
@@ -558,6 +829,8 @@ async function attachTarget(targetId) {
       targetId
     });
   }
+
+  await assertTabAccessForTab(tabId);
 
   const sessionId = makeRootSessionId();
   state.sessions.set(sessionId, { tabId, targetId, root: true });
@@ -824,6 +1097,20 @@ async function sendCommand(payload) {
     });
   }
 
+  const navigationUrl =
+    payload.method === "Page.navigate" && typeof payload.params?.url === "string"
+      ? payload.params.url
+      : null;
+  if (payload.sessionId) {
+    const session = lookupSession(payload.sessionId);
+    await assertTabAccessForTab(session.tabId, { navigationUrl });
+  } else {
+    const tabId = parsePageTargetId(payload.targetId);
+    if (Number.isInteger(tabId)) {
+      await assertTabAccessForTab(tabId, { navigationUrl });
+    }
+  }
+
   const resolved = await resolveDebuggee(payload);
   if (OPTIONAL_NOOP_METHODS.has(payload.method)) {
     return {};
@@ -869,8 +1156,11 @@ async function sendCommand(payload) {
 }
 
 async function createTarget(url) {
+  const targetUrl = url || "about:blank";
+  await assertTabAccessAllowed(targetUrl);
+
   const tab = await chrome.tabs.create({
-    url: url || "about:blank",
+    url: targetUrl,
     active: true
   });
 
@@ -887,6 +1177,7 @@ async function activateTarget(targetId) {
     throw createError(-32602, "Target.activateTarget requires a page targetId");
   }
 
+  await assertTabAccessForTab(tabId);
   const tab = await chrome.tabs.get(tabId);
   await chrome.tabs.update(tabId, { active: true });
   if (tab.windowId !== chrome.windows.WINDOW_ID_NONE) {
@@ -901,6 +1192,7 @@ async function closeTarget(targetId) {
     throw createError(-32602, "Target.closeTarget requires a page targetId");
   }
 
+  await assertTabAccessForTab(tabId);
   await chrome.tabs.remove(tabId);
   return { success: true };
 }
@@ -930,7 +1222,10 @@ async function getDiagnostics() {
     bridgeStatus: state.bridgeStatus,
     lastError: state.lastError,
     settings: state.settings,
-    developmentReloadAllowedIds: state.developmentReloadAllowedIds
+    developmentReloadAllowedIds: state.developmentReloadAllowedIds,
+    tabAccessAllowlist: state.tabAccessAllowlist,
+    spawnedTabsClosed: state.spawnedTabsClosed,
+    lastSpawnedCloses: state.lastSpawnedCloses
   };
 }
 
@@ -1053,6 +1348,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     return;
   }
 
+  if (method === "Fetch.requestPaused") {
+    // Resolve paused requests ourselves so the allowlist gate is unconditional.
+    // Do not forward: the request is continued or failed by the gate.
+    void handleFetchRequestPaused(source, params);
+    return;
+  }
+
   const targetId = makePageTargetId(source.tabId);
 
   if (method === "Target.attachedToTarget" && params?.sessionId) {
@@ -1114,6 +1416,7 @@ chrome.tabs.onCreated.addListener((tab) => {
   if (typeof tab.id === "number") {
     emitTargetLifecycle("targetCreated", buildTargetInfo(tab));
   }
+  trackSpawnedTab(tab);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -1124,6 +1427,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       id: tabId
     })
   );
+
+  if (changeInfo.url) {
+    policeSpawnedTab(tabId, changeInfo.url);
+  }
 
   const pendingNavigation = state.pendingInternalNavigations.get(tabId);
   const tabUrl = tab.url ?? changeInfo.url ?? "about:blank";
@@ -1151,6 +1458,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearPendingInternalNavigation(tabId);
+  state.spawnedTabs.delete(tabId);
   emitTargetLifecycle("targetDestroyed", makePageTargetId(tabId));
 });
 
@@ -1233,6 +1541,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({
             ok: true,
             allowedExtensionIds: await saveDevelopmentReloadAllowedIds(message.extensionIds)
+          });
+          return;
+        case "set-tab-access-allowlist":
+          sendResponse({
+            ok: true,
+            tabAccessAllowlist: await saveTabAccessAllowlist(message.entries)
           });
           return;
         default:

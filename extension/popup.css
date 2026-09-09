@@ -86,17 +86,51 @@ button.secondary {
 }
 
 .reload-id-row,
-.add-reload-id-row {
+.add-reload-id-row,
+.add-tab-access-row {
   display: flex;
   gap: 6px;
 }
 
 .reload-id-row input,
-.add-reload-id-row input {
+.add-reload-id-row input,
+.add-tab-access-row input {
   width: auto;
   min-width: 0;
   flex: 1;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.tab-access-list {
+  display: grid;
+  gap: 6px;
+}
+
+.tab-access-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tab-access-row input[type="text"] {
+  width: auto;
+  min-width: 0;
+  flex: 1;
+}
+
+.tab-access-row input[type="checkbox"] {
+  width: 16px;
+  flex: none;
+}
+
+.tab-access-empty {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.tab-access-hint {
+  color: #9ca3af;
+  font-size: 12px;
 }
 
 .small-button {

@@ -85,6 +85,20 @@ The JSON payload must contain exactly one field, `extensionId`. CDT Bridge accep
 
    The bridge uses port `9222` by default. You can change it from the popup, and the extension persists that setting across browser restarts. If the configured port is busy, the native host falls back to a free local port.
 
+### Tab access allowlist
+
+By default the extension blocks all tab access so an unattended agent cannot drive arbitrary pages. The popup’s **Tab access** list is a URL-prefix allowlist stored in `chrome.storage.local`: a URL is accessible when it starts with the prefix of an enabled entry. Everything below a prefix is allowed implicitly, so no trailing `/*` is needed. A `*` in the domain part matches whole subdomain labels: `https://*.example.com` allows `example.com` and any `*.example.com` subdomain, but never `example.com.evil.com`. Plain prefixes are boundary-checked, so `https://nos.nl` does not match `https://nos.nlevil.com`.
+
+The check applies to attaching, sending CDP commands, navigating (both the current tab URL and the navigation destination), creating, activating, and closing tabs. Target lists mark inaccessible tabs with `blocked: true`.
+
+In addition, while the agent is attached to a tab the extension gates **every network request** of that tab (documents, XHR/fetch, and each hop of a redirect chain) through the allowlist via CDP `Fetch` interception; non-matching requests are failed before they load. This stops same-origin data reads and exfiltration to blocked domains, not just navigations. Your own normal browsing is unaffected — only agent-attached tabs are gated. Consequences:
+
+- An allowed site may need extra entries for supporting paths or domains (assets, CDNs, APIs on other hosts) or those requests will fail. The popup list is the place to add them.
+- Tabs **opened from an agent-controlled tab** (a tab the agent has attached or a session on, e.g. `target="_blank"` clicks) are tracked for their lifetime; if such a tab navigates to a non-allowlisted URL it is closed automatically and the URL is auto-added (disabled). Your own tabs, which you open yourself, are never touched. The popup shows how many blocked popups were closed.
+- If an **attached tab** navigates to a non-allowlisted URL, the gate fails the load and the tab is left on Chrome’s block page (`ERR_BLOCKED_BY_CLIENT`) as a visible trace that a blocked navigation was attempted. The agent is locked out of such a tab; close it or navigate it away manually.
+- When a blocked URL is requested, the command fails with a `Tab access blocked` error stating that the URL must be approved manually. Blocked **navigations** are auto-added to the list **disabled**; blocked subresources are not auto-added (to avoid spamming the list with asset URLs) and surface as failed requests instead.
+- Enable an auto-added entry (or widen it to a prefix) in the popup to approve it.
+
 ## Use with agent-browser
 
 Point `agent-browser` at the bridge URL reported by the extension popup or toolbar action, not a hardcoded remote-debugging port:
