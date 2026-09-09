@@ -29,6 +29,7 @@ async function loadServiceWorkerHarness({
   const postedMessages = [];
   const nativeMessageListeners = [];
   const nativeDisconnectListeners = [];
+  const reloadCalls = [];
   const tabListeners = {
     created: [],
     updated: [],
@@ -231,6 +232,7 @@ async function loadServiceWorkerHarness({
       },
       async reload(tabId) {
         assert.equal(tabs.has(tabId), true);
+        reloadCalls.push(tabId);
       },
       onCreated: {
         addListener(listener) {
@@ -318,6 +320,7 @@ async function loadServiceWorkerHarness({
     nativePort,
     postedMessages,
     storage,
+    reloadCalls,
     listeners: {
       runtime: runtimeListeners,
       debuggerEvent: debuggerEventListeners,
@@ -1096,146 +1099,205 @@ test("service worker checks every redirect hop of a gated request", async () => 
   );
 });
 
-test("service worker closes spawned tabs that open a non-allowlisted URL", async () => {
+
+test("service worker gates network of tabs spawned from agent tabs", async () => {
+  const sentCommands = [];
   const harness = await loadServiceWorkerHarness({
-    windows: [
-      {
-        id: 1,
-        focused: true,
-        type: "normal",
-        tabs: [
-          { id: 81, url: "https://app.example", title: "App", index: 0, active: true },
-          { id: 90, url: "https://blocked.example/x", title: "Blocked", index: 1, active: false }
-        ]
-      }
-    ],
-    storedTabAccessAllowlist: allowUrls("https://app.example")
+    tab: { id: 96, url: "https://app.example", title: "App" },
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async (debuggee, method, params) => {
+      sentCommands.push({ method, params });
+      return {};
+    }
   });
-  harness.state.rootAttachments.set(81, {
-    tabId: 81,
-    targetId: harness.makePageTargetId(81),
-    rootSessions: new Set(),
-    childSessions: new Set()
-  });
-
-  harness.listeners.tabs.created[0]({
-    id: 90,
-    openerTabId: 81,
-    url: "https://blocked.example/x",
-    title: "Blocked"
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assert.equal(harness.tabs.has(90), false);
-  assert.deepEqual(plain(harness.state.tabAccessAllowlist), [
-    { url: "https://app.example", enabled: true },
-    { url: "https://blocked.example/x", enabled: false }
-  ]);
-});
-
-test("service worker leaves spawned tabs alone when allowed or not spawned by an attached tab", async () => {
-  const harness = await loadServiceWorkerHarness({
-    windows: [
-      {
-        id: 1,
-        focused: true,
-        type: "normal",
-        tabs: [
-          { id: 83, url: "https://app.example", title: "App", index: 0, active: true },
-          { id: 91, url: "https://app.example/new", title: "New", index: 1, active: false },
-          { id: 92, url: "https://blocked.example/y", title: "Blocked", index: 2, active: false }
-        ]
-      }
-    ],
-    storedTabAccessAllowlist: allowUrls("https://app.example")
-  });
-  harness.state.rootAttachments.set(83, {
-    tabId: 83,
-    targetId: harness.makePageTargetId(83),
-    rootSessions: new Set(),
-    childSessions: new Set()
-  });
-
-  harness.listeners.tabs.created[0]({ id: 91, openerTabId: 83, url: "https://app.example/new" });
-  harness.listeners.tabs.created[0]({ id: 92, openerTabId: 55, url: "https://blocked.example/y" });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assert.equal(harness.tabs.has(91), true);
-  assert.equal(harness.tabs.has(92), true);
-  assert.deepEqual(plain(harness.state.tabAccessAllowlist), allowUrls("https://app.example"));
-});
-
-test("service worker closes spawned tabs that later navigate to a non-allowlisted URL", async () => {
-  const harness = await loadServiceWorkerHarness({
-    windows: [
-      {
-        id: 1,
-        focused: true,
-        type: "normal",
-        tabs: [
-          { id: 85, url: "https://app.example", title: "App", index: 0, active: true },
-          { id: 93, url: "about:blank", title: "", index: 1, active: false }
-        ]
-      }
-    ],
-    storedTabAccessAllowlist: allowUrls("https://app.example")
-  });
-  harness.state.rootAttachments.set(85, {
-    tabId: 85,
-    targetId: harness.makePageTargetId(85),
-    rootSessions: new Set(),
-    childSessions: new Set()
-  });
-
-  harness.listeners.tabs.created[0]({ id: 93, openerTabId: 85, url: "about:blank" });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(harness.tabs.has(93), true);
-
-  harness.listeners.tabs.updated[0](
-    93,
-    { url: "https://blocked.example/late" },
-    { id: 93, url: "https://blocked.example/late", title: "Blocked" }
-  );
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assert.equal(harness.tabs.has(93), false);
-  assert.deepEqual(plain(harness.state.tabAccessAllowlist), [
-    { url: "https://app.example", enabled: true },
-    { url: "https://blocked.example/late", enabled: false }
-  ]);
-});
-
-test("service worker closes spawned tabs when the opener only has a session (no debugger attach yet)", async () => {
-  const harness = await loadServiceWorkerHarness({
-    windows: [
-      {
-        id: 1,
-        focused: true,
-        type: "normal",
-        tabs: [
-          { id: 87, url: "https://app.example", title: "App", index: 0, active: true },
-          { id: 94, url: "https://blocked.example/z", title: "Blocked", index: 1, active: false }
-        ]
-      }
-    ],
-    storedTabAccessAllowlist: allowUrls("https://app.example")
-  });
-  // Session only — no entry in rootAttachments.
-  harness.state.sessions.set("root-session-87", {
-    tabId: 87,
-    targetId: harness.makePageTargetId(87),
+  harness.state.sessions.set("root-session-96", {
+    tabId: 96,
+    targetId: harness.makePageTargetId(96),
     root: true
   });
 
-  harness.listeners.tabs.created[0]({
-    id: 94,
-    openerTabId: 87,
-    url: "https://blocked.example/z",
-    title: "Blocked"
-  });
+  harness.listeners.tabs.created[0]({ id: 97, openerTabId: 96, url: "about:blank" });
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  assert.equal(harness.tabs.has(94), false);
-  assert.equal(harness.state.spawnedTabsClosed, 1);
+  assert.equal(harness.state.spawnedTabs.has(97), true);
+  assert.ok(sentCommands.some(({ method }) => method === "Fetch.enable"));
 });
 
+test("service worker does not gate tabs spawned by non-agent tabs", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 98, url: "https://app.example", title: "App" },
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async (debuggee, method) => {
+      sentCommands.push({ method });
+      return {};
+    }
+  });
+
+  harness.listeners.tabs.created[0]({ id: 99, openerTabId: 55, url: "about:blank" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(harness.state.spawnedTabs.has(99), false);
+  assert.ok(!sentCommands.some(({ method }) => method === "Fetch.enable"));
+});
+
+test("service worker gates cross-origin spawned tabs whose openerTabId arrives at onUpdated", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 106, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 107, url: "about:blank", title: "", index: 1, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async (debuggee, method) => {
+      sentCommands.push({ method });
+      return {};
+    }
+  });
+  harness.state.sessions.set("root-session-106", {
+    tabId: 106,
+    targetId: harness.makePageTargetId(106),
+    root: true
+  });
+
+  // Cross-origin window.open: openerTabId is absent at creation time.
+  harness.listeners.tabs.created[0]({ id: 107, url: "about:blank" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(harness.state.spawnedTabs.has(107), false);
+
+  // The opener relationship is established on a later update, and the
+  // disallowed URL has already committed.
+  harness.listeners.tabs.updated[0](
+    107,
+    { url: "https://blocked.example/x", status: "complete" },
+    { id: 107, url: "https://blocked.example/x", title: "", openerTabId: 106 }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(harness.state.spawnedTabs.has(107), true);
+  assert.ok(sentCommands.some(({ method }) => method === "Fetch.enable"));
+  assert.deepEqual(harness.reloadCalls, [107]);
+});
+
+test("service worker reloads spawned tabs that beat the gate to a disallowed URL", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 100, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 101, url: "about:blank", title: "", index: 1, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async (debuggee, method) => {
+      sentCommands.push({ method });
+      return {};
+    }
+  });
+  harness.state.sessions.set("root-session-100", {
+    tabId: 100,
+    targetId: harness.makePageTargetId(100),
+    root: true
+  });
+
+  harness.listeners.tabs.created[0]({ id: 101, openerTabId: 100, url: "about:blank" });
+  // Simulate the document load beating the gate: URL lands before attach finished.
+  harness.state.rootAttachments.delete(101);
+  harness.listeners.tabs.updated[0](
+    101,
+    { url: "https://blocked.example/x" },
+    { id: 101, url: "https://blocked.example/x", title: "" }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.ok(sentCommands.some(({ method }) => method === "Fetch.enable"));
+  assert.deepEqual(harness.reloadCalls, [101]);
+});
+
+test("service worker reloads spawned tabs even when the debugger attached before the disallowed URL committed", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 102, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 103, url: "about:blank", title: "", index: 1, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+  harness.state.sessions.set("root-session-102", {
+    tabId: 102,
+    targetId: harness.makePageTargetId(102),
+    root: true
+  });
+  harness.state.spawnedTabs.set(103, true);
+  // Attach completed (and Fetch.enable was sent) before the URL-change
+  // event arrived — but the in-flight document request was issued before
+  // Fetch.enable took effect, so the page is fully loaded. Attach state
+  // cannot prove the load was gated; the tab must be reloaded.
+  harness.state.rootAttachments.set(103, {
+    tabId: 103,
+    targetId: harness.makePageTargetId(103),
+    rootSessions: new Set(),
+    childSessions: new Set()
+  });
+
+  harness.listeners.tabs.updated[0](
+    103,
+    { url: "https://blocked.example/x" },
+    { id: 103, url: "https://blocked.example/x", title: "" }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.deepEqual(harness.reloadCalls, [103]);
+});
+
+test("service worker does not reload a spawned tab twice for the same disallowed URL", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 104, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 105, url: "about:blank", title: "", index: 1, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+  harness.state.sessions.set("root-session-104", {
+    tabId: 104,
+    targetId: harness.makePageTargetId(104),
+    root: true
+  });
+  harness.state.spawnedTabs.set(105, true);
+
+  const changeInfo = { url: "https://blocked.example/x" };
+  const tab = { id: 105, url: "https://blocked.example/x", title: "" };
+  harness.listeners.tabs.updated[0](105, changeInfo, tab);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  harness.listeners.tabs.updated[0](105, changeInfo, tab);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.deepEqual(harness.reloadCalls, [105]);
+});

@@ -114,8 +114,7 @@ const state = {
   rootAttachments: new Map(),
   sessions: new Map(),
   spawnedTabs: new Map(),
-  spawnedTabsClosed: 0,
-  lastSpawnedCloses: [],
+  spawnedTabPolicedUrls: new Map(),
   expectedDetachTabs: new Set(),
   pendingInternalNavigations: new Map(),
   internalNavigationTabs: new Set()
@@ -365,45 +364,6 @@ function isTransientSpawnUrl(url) {
   );
 }
 
-function policeSpawnedTab(tabId, url) {
-  if (!state.spawnedTabs.has(tabId) || isTransientSpawnUrl(url)) {
-    return;
-  }
-  if (isTabUrlAllowed(url)) {
-    return;
-  }
-  // Never auto-close browser-internal pages: the user must always be able to
-  // reach chrome://extensions & co. manually. Agent access to them is still
-  // gated by the command-level allowlist check.
-  if (isBrowserInternalUrl(url)) {
-    console.warn(`[cdt-bridge] kill-switch: leaving internal URL alone: ${url} (tab ${tabId})`);
-    return;
-  }
-
-  state.spawnedTabs.delete(tabId);
-  void (async () => {
-    // Record what was blocked so the user can approve it in the popup.
-    await autoAddBlockedTabUrl(url);
-    let openerTabId = null;
-    try {
-      openerTabId = (await chrome.tabs.get(tabId)).openerTabId ?? null;
-    } catch {
-      // The tab may have closed already.
-    }
-    console.warn(`[cdt-bridge] kill-switch: closing tab ${tabId} (opener ${openerTabId}) for blocked URL ${url}`);
-    state.lastSpawnedCloses.push({ url, tabId, openerTabId, at: new Date().toISOString() });
-    if (state.lastSpawnedCloses.length > 5) {
-      state.lastSpawnedCloses.shift();
-    }
-    try {
-      await chrome.tabs.remove(tabId);
-      state.spawnedTabsClosed += 1;
-    } catch {
-      // The tab may have closed already.
-    }
-  })();
-}
-
 function isAgentTab(tabId) {
   if (typeof tabId !== "number") {
     return false;
@@ -422,9 +382,55 @@ function isAgentTab(tabId) {
 }
 
 function trackSpawnedTab(tab) {
-  if (typeof tab.id === "number" && isAgentTab(tab.openerTabId)) {
-    state.spawnedTabs.set(tab.id, true);
-    policeSpawnedTab(tab.id, tab.url);
+  if (typeof tab.id !== "number" || !isAgentTab(tab.openerTabId)) {
+    return;
+  }
+  // Idempotent: openerTabId may be absent at onCreated for cross-origin
+  // window.open and only appear on a later onUpdated, so this is called
+  // from both. Skip tabs already tracked to avoid redundant attaches.
+  if (state.spawnedTabs.has(tab.id)) {
+    return;
+  }
+  state.spawnedTabs.set(tab.id, true);
+  // Gate this tab's network as soon as possible. Without this, a
+  // window.open() reference from the opener would allow same-origin
+  // reads of disallowed pages that load ungated in the new tab.
+  void ensureDebuggerAttached(tab.id).catch(() => {
+    // Best effort; policeSpawnedTabUrl reloads if the gate missed the load.
+  });
+  // If the initial document committed before this tab was tracked (e.g.
+  // cross-origin window.open, where openerTabId arrives late), police the
+  // current URL now so a disallowed load is reloaded through the gate.
+  if (typeof tab.url === "string") {
+    void policeSpawnedTabUrl(tab.id, tab.url);
+  }
+}
+
+async function policeSpawnedTabUrl(tabId, url) {
+  if (!state.spawnedTabs.has(tabId) || isTransientSpawnUrl(url)) {
+    return;
+  }
+  if (isTabUrlAllowed(url) || isBrowserInternalUrl(url)) {
+    return;
+  }
+  // A committed disallowed URL must be reloaded so the fresh document
+  // request is intercepted by the (now-active) Fetch gate. Attach state
+  // cannot prove the original in-flight load was gated: the document may
+  // have been fetched before Fetch.enable took effect, leaving a fully
+  // readable page behind a window.open() reference. The per-URL set
+  // prevents reload loops on redirect chains within a disallowed site.
+  const policedUrls = state.spawnedTabPolicedUrls.get(tabId) ?? new Set();
+  if (policedUrls.has(url)) {
+    return;
+  }
+  policedUrls.add(url);
+  state.spawnedTabPolicedUrls.set(tabId, policedUrls);
+  try {
+    await ensureDebuggerAttached(tabId);
+    await chrome.tabs.reload(tabId);
+  } catch {
+    // The tab may be gone or refuse the debugger; allow a later retry.
+    state.spawnedTabPolicedUrls.delete(tabId);
   }
 }
 
@@ -735,44 +741,58 @@ function compareTabsForDiscovery(left, right) {
   return (left.index ?? 0) - (right.index ?? 0);
 }
 
+const attachmentPromises = new Map();
+
 async function ensureDebuggerAttached(tabId) {
   if (state.rootAttachments.has(tabId)) {
     return state.rootAttachments.get(tabId);
   }
-
-  await chrome.debugger.attach({ tabId }, DEBUGGER_VERSION);
-
-  const attachment = {
-    tabId,
-    targetId: makePageTargetId(tabId),
-    rootSessions: new Set(),
-    childSessions: new Set()
-  };
-
-  state.rootAttachments.set(tabId, attachment);
-
-  try {
-    await chrome.debugger.sendCommand(
-      { tabId },
-      "Target.setAutoAttach",
-      {
-        autoAttach: true,
-        waitForDebuggerOnStart: false,
-        flatten: true
-      }
-    );
-  } catch {
-    // Not every Chrome/Edge build will accept this before attach flows are fully active.
+  const pending = attachmentPromises.get(tabId);
+  if (pending) {
+    return pending;
   }
 
-  try {
-    // Gate every network request of this tab through the allowlist.
-    await chrome.debugger.sendCommand({ tabId }, "Fetch.enable", {});
-  } catch {
-    // Fetch gating is best-effort; the command-level checks still apply.
-  }
+  const promise = (async () => {
+    await chrome.debugger.attach({ tabId }, DEBUGGER_VERSION);
 
-  return attachment;
+    const attachment = {
+      tabId,
+      targetId: makePageTargetId(tabId),
+      rootSessions: new Set(),
+      childSessions: new Set()
+    };
+
+    state.rootAttachments.set(tabId, attachment);
+
+    try {
+      await chrome.debugger.sendCommand(
+        { tabId },
+        "Target.setAutoAttach",
+        {
+          autoAttach: true,
+          waitForDebuggerOnStart: false,
+          flatten: true
+        }
+      );
+    } catch {
+      // Not every Chrome/Edge build will accept this before attach flows are fully active.
+    }
+
+    try {
+      // Gate every network request of this tab through the allowlist.
+      await chrome.debugger.sendCommand({ tabId }, "Fetch.enable", {});
+    } catch {
+      // Fetch gating is best-effort; the command-level checks still apply.
+    }
+
+    return attachment;
+  })();
+  attachmentPromises.set(tabId, promise);
+  try {
+    return await promise;
+  } finally {
+    attachmentPromises.delete(tabId);
+  }
 }
 
 function lookupSession(sessionId) {
@@ -871,6 +891,10 @@ async function detachTarget({ sessionId, targetId }) {
   if (!Number.isInteger(tabId)) {
     throw createError(-32602, "detach requires sessionId or page targetId");
   }
+
+  // The agent must not be able to detach (and thus ungate) a tab it cannot
+  // access, including tabs the extension gated internally.
+  await assertTabAccessForTab(tabId);
 
   for (const [existingSessionId, session] of state.sessions.entries()) {
     if (session.tabId === tabId) {
@@ -1223,9 +1247,7 @@ async function getDiagnostics() {
     lastError: state.lastError,
     settings: state.settings,
     developmentReloadAllowedIds: state.developmentReloadAllowedIds,
-    tabAccessAllowlist: state.tabAccessAllowlist,
-    spawnedTabsClosed: state.spawnedTabsClosed,
-    lastSpawnedCloses: state.lastSpawnedCloses
+    tabAccessAllowlist: state.tabAccessAllowlist
   };
 }
 
@@ -1428,8 +1450,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     })
   );
 
+  // openerTabId can be populated after onCreated (notably for cross-origin
+  // window.open), so (re)check spawn tracking before policing the URL.
+  trackSpawnedTab({ ...tab, id: tabId });
+
   if (changeInfo.url) {
-    policeSpawnedTab(tabId, changeInfo.url);
+    void policeSpawnedTabUrl(tabId, changeInfo.url);
   }
 
   const pendingNavigation = state.pendingInternalNavigations.get(tabId);
@@ -1459,6 +1485,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearPendingInternalNavigation(tabId);
   state.spawnedTabs.delete(tabId);
+  state.spawnedTabPolicedUrls.delete(tabId);
   emitTargetLifecycle("targetDestroyed", makePageTargetId(tabId));
 });
 

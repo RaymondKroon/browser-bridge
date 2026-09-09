@@ -140,9 +140,6 @@ async function refresh() {
   document.getElementById("reload-auth").hidden = !reloadRequiresToken;
   document.getElementById("reload-token").textContent = currentReloadToken ?? "-";
   document.getElementById("last-error").textContent = response.state.lastError ?? "-";
-  document.getElementById("spawned-closed").textContent = `${response.state.spawnedTabsClosed ?? 0}`;
-  const lastClose = (response.state.lastSpawnedCloses ?? [])[response.state.lastSpawnedCloses?.length - 1];
-  document.getElementById("spawned-last").textContent = lastClose ? `${lastClose.url} (opener ${lastClose.openerTabId ?? "?"})` : "-";
   updatePortInput(response.settings ?? response.state.settings);
   updateAllowedIds(response.state.developmentReloadAllowedIds);
   updateTabAccess(response.state.tabAccessAllowlist);
