@@ -40,6 +40,10 @@ test("bridge exposes discovery endpoints and browser websocket", async () => {
     assert.ok(Array.isArray(protocol.domains));
     assert.ok(protocol.domains.some((domain) => domain.domain === "Page"));
 
+    const diagnostics = await readJson(`${bridge.httpBaseUrl}/json/diagnostics`);
+    assert.equal(diagnostics.browserVersion, "FakeBrowser/1.0");
+    assert.deepEqual(diagnostics.crashLog, []);
+
     const createdTarget = await readJson(`${bridge.httpBaseUrl}/json/new?https://example.com`, {
       method: "PUT"
     });

@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { BRIDGE_VERSION, DEFAULT_BRIDGE_PORT } from "../bridge/constants.js";
 import { CdpBridgeServer } from "../bridge/cdp-bridge-server.js";
 import { NativeMessagingTransport } from "./native-messaging-transport.js";
+import { createCrashLogger } from "./crash-logger.js";
 import {
   DevelopmentReloadServer,
   loadDevelopmentReloadConfig
@@ -78,6 +79,9 @@ export async function startBridgeServer({
 }
 
 export async function runNativeHost() {
+  const crashLogger = createCrashLogger();
+  crashLogger.installProcessHandlers();
+
   const transport = new NativeMessagingTransport();
   transport.start();
 
@@ -105,6 +109,7 @@ export async function runNativeHost() {
     host: bridge.host,
     httpBaseUrl: bridge.httpBaseUrl,
     browserWebSocketUrl: bridge.browserWebSocketUrl,
+    crashLogPath: crashLogger.logPath,
     developmentReload: reloadServer
       ? {
           enabled: true,
@@ -138,7 +143,12 @@ export async function runNativeHost() {
     }
   });
 
-  transport.on("disconnect", async () => {
+  crashLogger.append("boot", { pid: process.pid, bridgePort: bridge.port });
+
+  transport.on("disconnect", async (error) => {
+    crashLogger.append("disconnect", {
+      reason: error ? error.message ?? String(error) : null
+    });
     await reloadServer?.stop();
     await bridge.stop();
     process.exit(0);

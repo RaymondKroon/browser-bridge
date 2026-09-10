@@ -21,9 +21,10 @@ async function loadServiceWorkerHarness({
     /\nrefreshActionState\(\);\n\nvoid \(async \(\) => \{\n[\s\S]*?\n\}\)\(\)\.catch\(\(error\) => \{\n[\s\S]*?\n\}\);\n?$/,
     "\n"
   );
-  source += "\n;globalThis.__serviceWorkerTestExports = { sendCommand, handleNativeRequest, state, makePageTargetId, loadSettings };\n";
+  source += "\n;globalThis.__serviceWorkerTestExports = { sendCommand, handleNativeRequest, state, makePageTargetId, loadSettings, ensureNativePort };\n";
 
   const runtimeListeners = [];
+  const selfListeners = {};
   const debuggerEventListeners = [];
   const debuggerDetachListeners = [];
   const postedMessages = [];
@@ -279,6 +280,11 @@ async function loadServiceWorkerHarness({
     chrome,
     console,
     crypto,
+    self: {
+      addEventListener(type, listener) {
+        (selfListeners[type] ??= []).push(listener);
+      }
+    },
     navigator: {
       userAgent:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -323,6 +329,7 @@ async function loadServiceWorkerHarness({
     reloadCalls,
     listeners: {
       runtime: runtimeListeners,
+      self: selfListeners,
       debuggerEvent: debuggerEventListeners,
       debuggerDetach: debuggerDetachListeners,
       tabs: tabListeners
@@ -570,6 +577,47 @@ test("service worker ignores source-tab detaches during internal-page retargetin
   assert.equal(harness.state.nativePort, harness.nativePort);
   assert.equal(harness.state.sessions.has(sessionId), true);
   assert.equal(harness.state.lastError, null);
+});
+
+test("service worker records crashes and disconnects in a persisted crash log", async () => {
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 31, url: "about:blank", title: "Blank" }
+  });
+
+  const rejectionError = new Error("gate exploded");
+  harness.listeners.self.unhandledrejection[0]({ reason: rejectionError });
+  harness.listeners.self.unhandledrejection[0]({ reason: "string rejection" });
+  harness.listeners.self.error[0]({
+    message: "boom",
+    filename: "extension/service-worker.js",
+    lineno: 42,
+    error: new Error("boom")
+  });
+
+  await harness.ensureNativePort();
+  harness.nativePort.disconnect();
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const crashLog = harness.storage.get("crashLog");
+  assert.equal(crashLog.length, 4);
+  assert.equal(crashLog[0].type, "unhandledrejection");
+  assert.equal(crashLog[0].message, "gate exploded");
+  assert.match(crashLog[0].stack, /gate exploded/);
+  assert.match(crashLog[0].time, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(crashLog[1].type, "unhandledrejection");
+  assert.equal(crashLog[1].message, "string rejection");
+  assert.equal(crashLog[1].stack, null);
+  assert.equal(crashLog[2].type, "error");
+  assert.equal(crashLog[2].message, "boom");
+  assert.equal(crashLog[2].source, "extension/service-worker.js");
+  assert.equal(crashLog[2].line, 42);
+  assert.match(crashLog[2].stack, /boom/);
+  assert.equal(crashLog[3].type, "port-disconnect");
+  assert.equal(crashLog[3].stopping, false);
+
+  const diagnostics = await harness.handleNativeRequest({ action: "getDiagnostics" });
+  assert.deepEqual(plain(diagnostics.crashLog), plain(crashLog));
 });
 
 test("service worker keeps the native host running after unexpected debugger detaches", async () => {

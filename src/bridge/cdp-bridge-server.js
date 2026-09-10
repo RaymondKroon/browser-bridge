@@ -271,6 +271,12 @@ export class CdpBridgeServer {
         return;
       }
 
+      if (requestUrl.pathname === "/json/diagnostics") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(await this.getDiagnostics()));
+        return;
+      }
+
       if (requestUrl.pathname === "/json/new" && req.method === "PUT") {
         const result = await this.transport.request("createTarget", {
           url: this.parseJsonNewUrl(requestUrl)

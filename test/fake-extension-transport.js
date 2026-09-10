@@ -31,7 +31,8 @@ export class FakeExtensionTransport extends EventEmitter {
         return {
           browserVersion: "FakeBrowser/1.0",
           userAgent: "FakeBrowser/1.0",
-          jsVersion: "FakeJS/1.0"
+          jsVersion: "FakeJS/1.0",
+          crashLog: []
         };
       case "listTargets":
         return [...this.targets.values()];

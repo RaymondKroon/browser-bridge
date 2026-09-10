@@ -84,6 +84,8 @@ const DEFAULT_BRIDGE_SETTINGS = Object.freeze({
   port: DEFAULT_BRIDGE_PORT
 });
 const TAB_ACCESS_STORAGE_KEY = "tabAccessAllowlist";
+const CRASH_LOG_STORAGE_KEY = "crashLog";
+const CRASH_LOG_MAX_ENTRIES = 50;
 const TAB_ACCESS_BLOCKED_CODE = -32003;
 const INTERNAL_PAGE_NOOP_METHODS = new Set([
   "Page.enable",
@@ -198,6 +200,31 @@ async function loadSettings() {
   state.tabAccessAllowlist = normalizeTabAccessAllowlist(stored?.[TAB_ACCESS_STORAGE_KEY]);
   state.settingsLoaded = true;
   return state.settings;
+}
+
+async function loadCrashLog() {
+  const stored = await chrome.storage.local.get(CRASH_LOG_STORAGE_KEY);
+  const entries = stored?.[CRASH_LOG_STORAGE_KEY];
+  return Array.isArray(entries) ? entries : [];
+}
+
+let crashLogQueue = Promise.resolve();
+
+function appendCrashLog(entry) {
+  // Best-effort: the crash log must never throw, even while the SW is dying.
+  // Appends are queued so concurrent crashes cannot overwrite each other.
+  crashLogQueue = crashLogQueue
+    .then(async () => {
+      const entries = await loadCrashLog();
+      entries.push({ time: new Date().toISOString(), ...entry });
+      await chrome.storage.local.set({
+        [CRASH_LOG_STORAGE_KEY]: entries.slice(-CRASH_LOG_MAX_ENTRIES)
+      });
+    })
+    .catch(() => {
+      // Ignore storage failures; there is nowhere else to log them.
+    });
+  return crashLogQueue;
 }
 
 async function saveDevelopmentReloadAllowedIds(value) {
@@ -610,6 +637,11 @@ async function ensureNativePort() {
     state.lastError = wasStopping
       ? null
       : chrome.runtime.lastError?.message ?? "Native host disconnected";
+    void appendCrashLog({
+      type: "port-disconnect",
+      stopping: wasStopping,
+      lastError: chrome.runtime.lastError?.message ?? null
+    });
     refreshActionState();
   });
 
@@ -1247,7 +1279,8 @@ async function getDiagnostics() {
     lastError: state.lastError,
     settings: state.settings,
     developmentReloadAllowedIds: state.developmentReloadAllowedIds,
-    tabAccessAllowlist: state.tabAccessAllowlist
+    tabAccessAllowlist: state.tabAccessAllowlist,
+    crashLog: await loadCrashLog()
   };
 }
 
@@ -1364,6 +1397,27 @@ function emitTargetLifecycle(type, targetInfoOrId) {
     emitNativeEvent({ type, targetInfo: targetInfoOrId });
   }
 }
+
+// Capture silent SW deaths: an unhandled rejection or uncaught error terminates
+// the MV3 worker with no other trace, so persist it before the SW goes away.
+self.addEventListener("unhandledrejection", (event) => {
+  const reason = event?.reason;
+  void appendCrashLog({
+    type: "unhandledrejection",
+    message: typeof reason?.message === "string" ? reason.message : String(reason ?? "unknown"),
+    stack: typeof reason?.stack === "string" ? reason.stack : null
+  });
+});
+
+self.addEventListener("error", (event) => {
+  void appendCrashLog({
+    type: "error",
+    message: event?.message ?? "uncaught error",
+    source: event?.filename ?? null,
+    line: event?.lineno ?? null,
+    stack: event?.error?.stack ?? null
+  });
+});
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (typeof source.tabId !== "number") {
@@ -1593,6 +1647,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 refreshActionState();
 
 void (async () => {
+  await appendCrashLog({ type: "boot" });
   await loadSettings();
   await ensureNativePort();
 })().catch((error) => {

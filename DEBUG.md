@@ -336,14 +336,38 @@ coincidence.
   (e.g. trailing `/`) to force a re-lookup. This is a tooling artifact, not a bridge
   drop.
 
-### Next step (not yet done)
+### Next step (done)
 
-Add crash-capture logging so the next occurrence is diagnosable:
+Crash-capture logging is implemented (see SPEC.md and section 14):
 1. SW: global `unhandledrejection` + `error` handlers → append to a persisted crash
-   log (`chrome.storage.local`), plus log SW boot and port-disconnect (with
-   `chrome.runtime.lastError`) to the same log.
-2. Expose that crash log via `getDiagnostics` (and a small bridge HTTP endpoint, e.g.
-   `/json/diagnostics`) so it can be read from the agent.
-3. Native host: `uncaughtException` + `unhandledRejection` → append to a log file on
-   disk; log the disconnect reason + timestamp in the `disconnect` handler.
-Then push → user pulls on Windows → reload → wait for the next drop and read the logs.
+   log (`chrome.storage.local` key `crashLog`), plus log SW boot and port-disconnect
+   (with `chrome.runtime.lastError`) to the same log.
+2. Exposed via `getDiagnostics` (so popup state includes it) and the bridge HTTP
+   endpoint `GET /json/diagnostics`.
+3. Native host: `uncaughtException` + `unhandledRejection` → append JSON lines to
+   `~/.cdt-bridge/native-host-crash.log` (override dir with `CDT_BRIDGE_CRASH_LOG_DIR`);
+   `boot` and `disconnect` (with reason) entries are also written. The log path is
+   included in the `bridgeStatus` event as `crashLogPath`.
+
+## 14. Crash-capture logging (what to read after the next drop)
+
+When the bridge drops again, read these two sources:
+
+1. **Extension SW crash log** — from the agent:
+   `curl http://127.0.0.1:9222/json/diagnostics` → `crashLog` array (last 50 entries,
+   each `{ time, type, message, stack?, ... }`). Types: `boot`, `port-disconnect`
+   (with `stopping` + `lastError`), `unhandledrejection`, `error`. If the SW died
+   from an unhandled rejection, the entry is written just before the worker dies.
+2. **Native host crash log** — on the Windows machine:
+   `%USERPROFILE%\.cdt-bridge\native-host-crash.log` (JSON lines). Types: `boot`
+   (with `pid` + `bridgePort`), `disconnect` (with `reason`), `uncaughtException`,
+   `unhandledRejection`. The exact path is in the popup's bridge status as
+   `crashLogPath`.
+
+Interpretation guide:
+- `port-disconnect` with `stopping: false` right before a drop = the SW died or the
+  host exited; look at the entry just before it in the same log for the cause.
+- A native-host `uncaughtException`/`unhandledRejection` entry = the host process
+  crashed; the `stack` points at the culprit.
+- No new entries in either log at drop time = suspect the port-forward (see the
+  environment notes in section 13), not the bridge itself.
