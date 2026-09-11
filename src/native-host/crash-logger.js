@@ -2,6 +2,22 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
+// Rejections in this codebase are often plain protocol-error objects, not
+// Error instances — serialize them so the log stays diagnosable.
+function describeReason(reason) {
+  if (reason instanceof Error) {
+    return { message: reason.message, stack: reason.stack ?? null };
+  }
+  if (reason !== null && typeof reason === "object") {
+    try {
+      return { message: JSON.stringify(reason), stack: null };
+    } catch {
+      // Fall through to String() for circular/unsupported values.
+    }
+  }
+  return { message: String(reason ?? "unknown"), stack: null };
+}
+
 export function resolveCrashLogPath(env = process.env) {
   const base = env.CDT_BRIDGE_CRASH_LOG_DIR ?? path.join(homedir(), ".cdt-bridge");
   return path.join(base, "native-host-crash.log");
@@ -55,10 +71,7 @@ export function createCrashLogger(logPath = resolveCrashLogPath()) {
         process.exit(1);
       });
       process.on("unhandledRejection", (reason) => {
-        append("unhandledRejection", {
-          message: reason instanceof Error ? reason.message : String(reason ?? "unknown"),
-          stack: reason instanceof Error ? reason.stack ?? null : null
-        });
+        append("unhandledRejection", describeReason(reason));
         process.exit(1);
       });
     }

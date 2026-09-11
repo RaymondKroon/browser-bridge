@@ -243,7 +243,13 @@ export class CdpBridgeServer {
       return;
     }
 
-    const requestUrl = new URL(req.url, this.httpBaseUrl);
+    let requestUrl;
+    try {
+      requestUrl = new URL(req.url, this.httpBaseUrl);
+    } catch {
+      res.writeHead(400).end();
+      return;
+    }
 
     try {
       if (requestUrl.pathname === "/healthz") {
@@ -330,7 +336,13 @@ export class CdpBridgeServer {
       return;
     }
 
-    const requestUrl = new URL(req.url, this.httpBaseUrl);
+    let requestUrl;
+    try {
+      requestUrl = new URL(req.url, this.httpBaseUrl);
+    } catch {
+      socket.destroy();
+      return;
+    }
     const browserPath =
       requestUrl.pathname === "/" ||
       requestUrl.pathname === "/devtools/browser" ||
@@ -370,6 +382,11 @@ export class CdpBridgeServer {
 
       if (mode === "page") {
         connection.initPromise = this.bootstrapPageConnection(connection);
+        // The rejection is delivered to the client when its first message
+        // arrives (handleSocketMessage awaits initPromise). Swallow it here
+        // so a failed attach before the first message cannot become an
+        // unhandled rejection, which would kill the host process.
+        connection.initPromise.catch(() => {});
       }
     });
   }

@@ -587,6 +587,7 @@ test("service worker records crashes and disconnects in a persisted crash log", 
   const rejectionError = new Error("gate exploded");
   harness.listeners.self.unhandledrejection[0]({ reason: rejectionError });
   harness.listeners.self.unhandledrejection[0]({ reason: "string rejection" });
+  harness.listeners.self.unhandledrejection[0]({ reason: { code: -32003, data: { url: "https://nu.nl" } } });
   harness.listeners.self.error[0]({
     message: "boom",
     filename: "extension/service-worker.js",
@@ -600,7 +601,7 @@ test("service worker records crashes and disconnects in a persisted crash log", 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const crashLog = harness.storage.get("crashLog");
-  assert.equal(crashLog.length, 4);
+  assert.equal(crashLog.length, 5);
   assert.equal(crashLog[0].type, "unhandledrejection");
   assert.equal(crashLog[0].message, "gate exploded");
   assert.match(crashLog[0].stack, /gate exploded/);
@@ -608,13 +609,15 @@ test("service worker records crashes and disconnects in a persisted crash log", 
   assert.equal(crashLog[1].type, "unhandledrejection");
   assert.equal(crashLog[1].message, "string rejection");
   assert.equal(crashLog[1].stack, null);
-  assert.equal(crashLog[2].type, "error");
-  assert.equal(crashLog[2].message, "boom");
-  assert.equal(crashLog[2].source, "extension/service-worker.js");
-  assert.equal(crashLog[2].line, 42);
-  assert.match(crashLog[2].stack, /boom/);
-  assert.equal(crashLog[3].type, "port-disconnect");
-  assert.equal(crashLog[3].stopping, false);
+  assert.equal(crashLog[2].type, "unhandledrejection");
+  assert.equal(crashLog[2].message, JSON.stringify({ code: -32003, data: { url: "https://nu.nl" } }));
+  assert.equal(crashLog[3].type, "error");
+  assert.equal(crashLog[3].message, "boom");
+  assert.equal(crashLog[3].source, "extension/service-worker.js");
+  assert.equal(crashLog[3].line, 42);
+  assert.match(crashLog[3].stack, /boom/);
+  assert.equal(crashLog[4].type, "port-disconnect");
+  assert.equal(crashLog[4].stopping, false);
 
   const diagnostics = await harness.handleNativeRequest({ action: "getDiagnostics" });
   assert.deepEqual(plain(diagnostics.crashLog), plain(crashLog));

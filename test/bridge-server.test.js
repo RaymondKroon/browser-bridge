@@ -123,6 +123,34 @@ test("bridge page websocket supports snapshot-like commands without a stored ses
   }
 });
 
+test("bridge survives a failed page attach before the first message", async () => {
+  const transport = new FakeExtensionTransport();
+  transport.attachErrors.set("page:404", { code: -32003, message: "Blocked by allowlist" });
+  const bridge = new CdpBridgeServer({ transport, port: 0 });
+  await bridge.start();
+
+  try {
+    const wsBaseUrl = bridge.httpBaseUrl.replace(/^http/, "ws");
+    const ws = new WebSocket(`${wsBaseUrl}/devtools/page/page%3A404`);
+    await once(ws, "open");
+
+    // Let the failed attach rejection settle without any client message.
+    // Before the fix this was an unhandled rejection that killed the host.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    ws.send(JSON.stringify({ id: 1, method: "Page.enable" }));
+    const [raw] = await once(ws, "message");
+    const message = JSON.parse(raw.toString());
+    assert.equal(message.id, 1);
+    assert.equal(message.error.code, -32003);
+    assert.match(message.error.message, /Blocked by allowlist/);
+
+    ws.close();
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test("bridge stop closes active websocket clients promptly", async () => {
   const transport = new FakeExtensionTransport();
   const bridge = new CdpBridgeServer({ transport, port: 0 });

@@ -67,6 +67,33 @@ test("crash logger captures uncaught exceptions before exiting", async () => {
   assert.match(lines[0].stack, /kaboom/);
 });
 
+test("crash logger serializes object rejection reasons", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "cdt-crash-"));
+  const logPath = path.join(dir, "crash.log");
+  const loggerPath = fileURLToPath(
+    new URL("../src/native-host/crash-logger.js", import.meta.url)
+  );
+  const reason = { code: -32003, message: "Blocked by allowlist", data: { url: "https://nu.nl" } };
+  const script = `
+    import { createCrashLogger } from ${JSON.stringify(loggerPath)};
+    createCrashLogger(${JSON.stringify(logPath)}).installProcessHandlers();
+    Promise.reject(${JSON.stringify(reason)});
+  `;
+
+  const status = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script]);
+    child.on("close", resolve);
+    child.on("error", reject);
+  });
+
+  assert.equal(status, 1);
+  const lines = readLogLines(logPath);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].type, "unhandledRejection");
+  assert.equal(lines[0].message, JSON.stringify(reason));
+  assert.equal(lines[0].message.includes("[object Object]"), false);
+});
+
 test("crash logger captures unhandled rejections before exiting", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "cdt-crash-"));
   const logPath = path.join(dir, "crash.log");

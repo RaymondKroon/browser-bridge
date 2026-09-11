@@ -1402,9 +1402,22 @@ function emitTargetLifecycle(type, targetInfoOrId) {
 // the MV3 worker with no other trace, so persist it before the SW goes away.
 self.addEventListener("unhandledrejection", (event) => {
   const reason = event?.reason;
+  let message;
+  if (typeof reason?.message === "string") {
+    message = reason.message;
+  } else if (reason !== null && typeof reason === "object") {
+    // Plain protocol-error objects are common; keep them readable.
+    try {
+      message = JSON.stringify(reason);
+    } catch {
+      message = String(reason);
+    }
+  } else {
+    message = String(reason ?? "unknown");
+  }
   void appendCrashLog({
     type: "unhandledrejection",
-    message: typeof reason?.message === "string" ? reason.message : String(reason ?? "unknown"),
+    message,
     stack: typeof reason?.stack === "string" ? reason.stack : null
   });
 });

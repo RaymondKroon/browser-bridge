@@ -274,13 +274,29 @@ Useful targets to look for:
 - `test/service-worker.test.js`
 - `test/native-messaging-transport.test.js`
 
-## 13. Intermittent bridge drop ("proxy stops by itself")
+## 13. Intermittent bridge drop ("proxy stops by itself") — ROOT CAUSE FOUND
+
+**Root cause (confirmed 2026-09-11 via crash logs):** an unhandled rejection in the
+native host. When a CDP client opens a **page WebSocket** (`/devtools/page/<id>`),
+`CdpBridgeServer.handleUpgrade` stored `bootstrapPageConnection()` as
+`connection.initPromise` with **no rejection handler**. If the attach failed (tab
+blocked by the allowlist, closed tab, SW error, 10s timeout) and the client had not
+sent a message yet, the rejection was unhandled → Node (≥15) exits the host process
+→ bridge dies. Crash-log signature: `unhandledRejection` with
+`message: "[object Object]"` (a plain protocol-error object, no stack) followed by
+the SW's `port-disconnect` with `lastError: "Native host has exited."` — the SW
+itself never crashed.
+
+Fix: `initPromise.catch(() => {})` at creation (the error is still delivered to the
+client with its first message), plus malformed-URL hardening in
+`handleHttpRequest`/`handleUpgrade`, plus object-reason JSON serialization in both
+crash loggers so `[object Object]` cannot recur. See section 15.
 
 Symptom: `127.0.0.1:9222` becomes unreachable ("not listening") or an open CDP
 session dies ("CDP connection closed" / "Unknown session"), then recovers after a
 while. Reported to correlate with reaching a **cross-origin, non-allowlisted** site
-(e.g. `nu.nl`) — but that correlation is **not yet confirmed** and could be
-coincidence.
+(e.g. `nu.nl`) — consistent with the root cause: navigating to / attaching a blocked
+tab makes the attach fail.
 
 ### Architecture fact (why the bridge drops at all)
 
@@ -371,3 +387,16 @@ Interpretation guide:
   crashed; the `stack` points at the culprit.
 - No new entries in either log at drop time = suspect the port-forward (see the
   environment notes in section 13), not the bridge itself.
+
+## 15. Crash-log anatomy of the 2026-09-11 drops (reference)
+
+SW log (`/json/diagnostics` → `crashLog`) and host log
+(`C:\Users\KroonRaymond\.cdt-bridge\native-host-crash.log`) agreed:
+
+- host: `unhandledRejection { message: "[object Object]", stack: null }` at 22:34:39
+  and 22:35:00 → process exit
+- SW: `port-disconnect { stopping: false, lastError: "Native host has exited." }`
+  at the same times, no `unhandledrejection`/`error` entries → SW was healthy
+
+Slow recovery (~2.5 min) is expected: the SW only relaunches the host on its next
+wake (`ensureNativePort`), not on a timer.

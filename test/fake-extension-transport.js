@@ -20,6 +20,7 @@ export class FakeExtensionTransport extends EventEmitter {
     this.sessions = new Map();
     this.cookies = [];
     this.commandLog = [];
+    this.attachErrors = new Map();
     this.ioStreams = new Map();
     this.traceSequence = 0;
     this.tracingState = null;
@@ -53,6 +54,10 @@ export class FakeExtensionTransport extends EventEmitter {
         return { targetId };
       }
       case "attach": {
+        const attachError = this.attachErrors.get(payload.targetId);
+        if (attachError) {
+          throw attachError;
+        }
         const sessionId = makeBridgeSessionId("session");
         this.sessions.set(sessionId, payload.targetId);
         const target = this.targets.get(payload.targetId);
