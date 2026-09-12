@@ -525,7 +525,8 @@ async function handleFetchRequestPaused(source, params) {
   const requestId = params?.requestId;
   const request = params?.request ?? {};
   const url = request.url;
-  const resourceType = request.resourceType ?? "other";
+  // Fetch.requestPaused carries resourceType as a top-level param.
+  const resourceType = params?.resourceType ?? request.resourceType ?? "other";
 
   const allowed =
     typeof url === "string" &&
@@ -536,7 +537,7 @@ async function handleFetchRequestPaused(source, params) {
     // show the user what the gate blocked and let them allow it.
     void recordBlockedRequest({ url, resourceType, tabId: source.tabId });
   }
-  if (!allowed && resourceType === "document" && typeof url === "string") {
+  if (!allowed && resourceType === "Document" && typeof url === "string") {
     // Only auto-add navigations; blocked subresources would spam the list.
     await autoAddBlockedTabUrl(url);
   }

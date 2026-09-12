@@ -1078,9 +1078,9 @@ test("service worker gates network requests of attached tabs through the allowli
 
   const emitPaused = (params) =>
     harness.listeners.debuggerEvent[0]({ tabId: 71 }, "Fetch.requestPaused", params);
-  emitPaused({ requestId: "r1", request: { url: "https://app.example/data.js", resourceType: "script" } });
-  emitPaused({ requestId: "r2", request: { url: "https://other.example/secret", resourceType: "xhr" } });
-  emitPaused({ requestId: "r3", request: { url: "https://other.example/page", resourceType: "document" } });
+  emitPaused({ requestId: "r1", resourceType: "Script", request: { url: "https://app.example/data.js" } });
+  emitPaused({ requestId: "r2", resourceType: "XHR", request: { url: "https://other.example/secret" } });
+  emitPaused({ requestId: "r3", resourceType: "Document", request: { url: "https://other.example/page" } });
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   assert.deepEqual(
@@ -1135,11 +1135,12 @@ test("service worker checks every redirect hop of a gated request", async () => 
 
   const emitPaused = (params) =>
     harness.listeners.debuggerEvent[0]({ tabId: 73 }, "Fetch.requestPaused", params);
-  emitPaused({ requestId: "r1", request: { url: "https://app.example/redirect", resourceType: "document" } });
+  emitPaused({ requestId: "r1", resourceType: "Document", request: { url: "https://app.example/redirect" } });
   emitPaused({
     requestId: "r1",
+    resourceType: "Document",
     response: { status: 302 },
-    request: { url: "https://other.example/taken", resourceType: "document" }
+    request: { url: "https://other.example/taken" }
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -1178,10 +1179,10 @@ test("service worker records blocked requests for the popup and persists them", 
 
   const emitPaused = (params) =>
     harness.listeners.debuggerEvent[0]({ tabId: 81 }, "Fetch.requestPaused", params);
-  emitPaused({ requestId: "r1", request: { url: "https://app.example/data.js", resourceType: "script" } });
-  emitPaused({ requestId: "r2", request: { url: "https://cdn.example/img.svg", resourceType: "image" } });
-  emitPaused({ requestId: "r3", request: { url: "https://cdn.example/img.svg", resourceType: "image" } });
-  emitPaused({ requestId: "r4", request: { url: "https://widget.example/js", resourceType: "script" } });
+  emitPaused({ requestId: "r1", resourceType: "Script", request: { url: "https://app.example/data.js" } });
+  emitPaused({ requestId: "r2", resourceType: "Image", request: { url: "https://cdn.example/img.svg" } });
+  emitPaused({ requestId: "r3", resourceType: "Image", request: { url: "https://cdn.example/img.svg" } });
+  emitPaused({ requestId: "r4", resourceType: "Script", request: { url: "https://widget.example/js" } });
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   // Allowed requests are not recorded; duplicates collapse into one entry.
@@ -1193,8 +1194,8 @@ test("service worker records blocked requests for the popup and persists them", 
       count
     })),
     [
-      { url: "https://widget.example/js", resourceType: "script", tabId: 81, count: 1 },
-      { url: "https://cdn.example/img.svg", resourceType: "image", tabId: 81, count: 2 }
+      { url: "https://widget.example/js", resourceType: "Script", tabId: 81, count: 1 },
+      { url: "https://cdn.example/img.svg", resourceType: "Image", tabId: 81, count: 2 }
     ]
   );
   assert.deepEqual(
@@ -1234,7 +1235,7 @@ test("service worker records blocked requests for the popup and persists them", 
 
 test("service worker restores the blocked requests log from storage", async () => {
   const stored = [
-    { url: "https://cdn.example/img.svg", resourceType: "image", tabId: 5, time: "2026-01-01T00:00:00.000Z", count: 3 }
+    { url: "https://cdn.example/img.svg", resourceType: "Image", tabId: 5, time: "2026-01-01T00:00:00.000Z", count: 3 }
   ];
   const harness = await loadServiceWorkerHarness({
     storedBlockedRequestsLog: stored
