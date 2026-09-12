@@ -128,6 +128,38 @@ button.secondary {
   font-size: 12px;
 }
 
+.blocked-requests-list {
+  display: grid;
+  gap: 8px;
+}
+
+.blocked-request-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: start;
+}
+
+.blocked-request-url {
+  grid-column: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.blocked-request-actions {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: flex;
+  gap: 6px;
+}
+
+.blocked-request-meta {
+  grid-column: 1;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
 .tab-access-hint {
   color: #9ca3af;
   font-size: 12px;

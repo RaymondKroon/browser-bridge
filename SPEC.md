@@ -32,6 +32,10 @@ Key invariants:
   new tab with synthetic CDP events instead of in-place navigation (see DEBUG.md §8).
 - Tab access is gated by a user-managed allowlist (`tabAccessAllowlist` in
   `chrome.storage.local`); blocked requests are failed via the Fetch domain.
+  Every blocked request (including subresources, which are not auto-added to
+  the allowlist) is recorded in `blockedRequestsLog` (last 50 entries, deduped
+  by URL) so the popup can show what was blocked and offer one-click origin
+  allowlisting.
 - The development reload token never crosses the bridge (not in
   `bridgeStatus`/diagnostics); it travels only over native messaging.
 

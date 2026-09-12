@@ -11,6 +11,7 @@ async function loadServiceWorkerHarness({
   windows = undefined,
   storedBridgeSettings = undefined,
   storedTabAccessAllowlist = undefined,
+  storedBlockedRequestsLog = undefined,
   debuggerSendCommand = async () => {
     throw new Error("Debugger command should not have been called");
   },
@@ -274,6 +275,9 @@ async function loadServiceWorkerHarness({
   }
   if (storedTabAccessAllowlist !== undefined) {
     storage.set("tabAccessAllowlist", storedTabAccessAllowlist);
+  }
+  if (storedBlockedRequestsLog !== undefined) {
+    storage.set("blockedRequestsLog", storedBlockedRequestsLog);
   }
 
   const context = vm.createContext({
@@ -1148,6 +1152,94 @@ test("service worker checks every redirect hop of a gated request", async () => 
       ["Fetch.failRequest", "r1"]
     ]
   );
+});
+
+test("service worker records blocked requests for the popup and persists them", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 81, url: "https://app.example", title: "App" },
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async (debuggee, method, params) => {
+      sentCommands.push({ method, params });
+      return {};
+    }
+  });
+  const sessionId = "root-session";
+  harness.state.sessions.set(sessionId, {
+    tabId: 81,
+    targetId: harness.makePageTargetId(81),
+    root: true
+  });
+  await harness.sendCommand({
+    method: "Runtime.evaluate",
+    params: { expression: "1" },
+    sessionId
+  });
+
+  const emitPaused = (params) =>
+    harness.listeners.debuggerEvent[0]({ tabId: 81 }, "Fetch.requestPaused", params);
+  emitPaused({ requestId: "r1", request: { url: "https://app.example/data.js", resourceType: "script" } });
+  emitPaused({ requestId: "r2", request: { url: "https://cdn.example/img.svg", resourceType: "image" } });
+  emitPaused({ requestId: "r3", request: { url: "https://cdn.example/img.svg", resourceType: "image" } });
+  emitPaused({ requestId: "r4", request: { url: "https://widget.example/js", resourceType: "script" } });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Allowed requests are not recorded; duplicates collapse into one entry.
+  assert.deepEqual(
+    plain(harness.state.blockedRequests).map(({ url, resourceType, tabId, count }) => ({
+      url,
+      resourceType,
+      tabId,
+      count
+    })),
+    [
+      { url: "https://widget.example/js", resourceType: "script", tabId: 81, count: 1 },
+      { url: "https://cdn.example/img.svg", resourceType: "image", tabId: 81, count: 2 }
+    ]
+  );
+  assert.deepEqual(
+    plain(harness.storage.get("blockedRequestsLog")).map(({ url }) => url),
+    ["https://widget.example/js", "https://cdn.example/img.svg"]
+  );
+
+  // The log is exposed through diagnostics for the popup.
+  const popupState = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "get-popup-state" }, null, resolve);
+  });
+  assert.deepEqual(
+    plain(popupState.state.blockedRequests).map(({ url }) => url),
+    ["https://widget.example/js", "https://cdn.example/img.svg"]
+  );
+
+  const dismissed = await new Promise((resolve) => {
+    harness.listeners.runtime[0](
+      { action: "dismiss-blocked-request", url: "https://widget.example/js" },
+      null,
+      resolve
+    );
+  });
+  assert.equal(dismissed.ok, true);
+  assert.deepEqual(
+    plain(dismissed.blockedRequests).map(({ url }) => url),
+    ["https://cdn.example/img.svg"]
+  );
+
+  const cleared = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "clear-blocked-requests" }, null, resolve);
+  });
+  assert.equal(cleared.ok, true);
+  assert.deepEqual(plain(cleared.blockedRequests), []);
+  assert.deepEqual(plain(harness.storage.get("blockedRequestsLog")), []);
+});
+
+test("service worker restores the blocked requests log from storage", async () => {
+  const stored = [
+    { url: "https://cdn.example/img.svg", resourceType: "image", tabId: 5, time: "2026-01-01T00:00:00.000Z", count: 3 }
+  ];
+  const harness = await loadServiceWorkerHarness({
+    storedBlockedRequestsLog: stored
+  });
+  assert.deepEqual(plain(harness.state.blockedRequests), stored);
 });
 
 

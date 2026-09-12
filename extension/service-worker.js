@@ -84,6 +84,8 @@ const DEFAULT_BRIDGE_SETTINGS = Object.freeze({
   port: DEFAULT_BRIDGE_PORT
 });
 const TAB_ACCESS_STORAGE_KEY = "tabAccessAllowlist";
+const BLOCKED_REQUESTS_STORAGE_KEY = "blockedRequestsLog";
+const BLOCKED_REQUESTS_MAX_ENTRIES = 50;
 const CRASH_LOG_STORAGE_KEY = "crashLog";
 const CRASH_LOG_MAX_ENTRIES = 50;
 const TAB_ACCESS_BLOCKED_CODE = -32003;
@@ -113,6 +115,7 @@ const state = {
   settings: { ...DEFAULT_BRIDGE_SETTINGS },
   tabAccessAllowlist: [],
   settingsLoaded: false,
+  blockedRequests: [],
   rootAttachments: new Map(),
   sessions: new Map(),
   spawnedTabs: new Map(),
@@ -189,7 +192,8 @@ async function loadSettings() {
   const stored = await chrome.storage.local.get([
     BRIDGE_SETTINGS_STORAGE_KEY,
     DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY,
-    TAB_ACCESS_STORAGE_KEY
+    TAB_ACCESS_STORAGE_KEY,
+    BLOCKED_REQUESTS_STORAGE_KEY
   ]);
   state.settings = {
     port: normalizeBridgePort(stored?.[BRIDGE_SETTINGS_STORAGE_KEY]?.port)
@@ -198,6 +202,7 @@ async function loadSettings() {
     stored?.[DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY]
   );
   state.tabAccessAllowlist = normalizeTabAccessAllowlist(stored?.[TAB_ACCESS_STORAGE_KEY]);
+  state.blockedRequests = normalizeBlockedRequests(stored?.[BLOCKED_REQUESTS_STORAGE_KEY]);
   state.settingsLoaded = true;
   return state.settings;
 }
@@ -232,6 +237,61 @@ async function saveDevelopmentReloadAllowedIds(value) {
   await chrome.storage.local.set({ [DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY]: ids });
   state.developmentReloadAllowedIds = ids;
   return ids;
+}
+
+function normalizeBlockedRequests(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const entries = [];
+  for (const item of value) {
+    const url = typeof item?.url === "string" ? item.url.trim() : "";
+    if (url.length === 0 || seen.has(url)) {
+      continue;
+    }
+    seen.add(url);
+    entries.push({
+      url,
+      resourceType: typeof item?.resourceType === "string" ? item.resourceType : "other",
+      tabId: typeof item?.tabId === "number" ? item.tabId : null,
+      time: typeof item?.time === "string" ? item.time : new Date(0).toISOString(),
+      count: Number.isInteger(item?.count) && item.count > 0 ? item.count : 1
+    });
+  }
+  return entries.slice(0, BLOCKED_REQUESTS_MAX_ENTRIES);
+}
+
+async function recordBlockedRequest({ url, resourceType, tabId }) {
+  if (typeof url !== "string" || url.length === 0) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const existing = state.blockedRequests.find((entry) => entry.url === url);
+  if (existing) {
+    existing.time = now;
+    existing.count += 1;
+    if (typeof tabId === "number") {
+      existing.tabId = tabId;
+    }
+  } else {
+    state.blockedRequests.unshift({
+      url,
+      resourceType: typeof resourceType === "string" ? resourceType : "other",
+      tabId: typeof tabId === "number" ? tabId : null,
+      time: now,
+      count: 1
+    });
+    state.blockedRequests = state.blockedRequests.slice(0, BLOCKED_REQUESTS_MAX_ENTRIES);
+  }
+
+  try {
+    await chrome.storage.local.set({ [BLOCKED_REQUESTS_STORAGE_KEY]: state.blockedRequests });
+  } catch {
+    // Keep the in-memory entry even if persistence fails; the popup reads state.
+  }
 }
 
 function normalizeTabAccessAllowlist(value) {
@@ -472,6 +532,9 @@ async function handleFetchRequestPaused(source, params) {
     (isTabUrlAllowed(url) || isBrowserInternalUrl(url));
   if (!allowed) {
     console.warn(`[cdt-bridge] fetch-gate: blocking ${resourceType} ${url} (tab ${source.tabId})`);
+    // Record every blocked request (not just navigations) so the popup can
+    // show the user what the gate blocked and let them allow it.
+    void recordBlockedRequest({ url, resourceType, tabId: source.tabId });
   }
   if (!allowed && resourceType === "document" && typeof url === "string") {
     // Only auto-add navigations; blocked subresources would spam the list.
@@ -1280,6 +1343,7 @@ async function getDiagnostics() {
     settings: state.settings,
     developmentReloadAllowedIds: state.developmentReloadAllowedIds,
     tabAccessAllowlist: state.tabAccessAllowlist,
+    blockedRequests: state.blockedRequests,
     crashLog: await loadCrashLog()
   };
 }
@@ -1642,6 +1706,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             ok: true,
             tabAccessAllowlist: await saveTabAccessAllowlist(message.entries)
           });
+          return;
+        case "dismiss-blocked-request":
+          state.blockedRequests = state.blockedRequests.filter(
+            (entry) => entry.url !== message.url
+          );
+          await chrome.storage.local.set({ [BLOCKED_REQUESTS_STORAGE_KEY]: state.blockedRequests });
+          sendResponse({ ok: true, blockedRequests: state.blockedRequests });
+          return;
+        case "clear-blocked-requests":
+          state.blockedRequests = [];
+          await chrome.storage.local.set({ [BLOCKED_REQUESTS_STORAGE_KEY]: state.blockedRequests });
+          sendResponse({ ok: true, blockedRequests: state.blockedRequests });
           return;
         default:
           sendResponse({

@@ -3,6 +3,7 @@ let reloadRequiresToken = false;
 let currentReloadEndpoint = null;
 let currentAllowedIds = [];
 let currentTabAccess = [];
+let currentBlockedRequests = [];
 
 async function send(action, extra = {}) {
   return chrome.runtime.sendMessage({ action, ...extra });
@@ -111,6 +112,91 @@ function updateTabAccess(entries) {
   });
 }
 
+function blockedRequestOrigin(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.origin;
+    }
+  } catch {
+    // Unparseable URL; fall back to the exact URL.
+  }
+  return url;
+}
+
+function updateBlockedRequests(entries) {
+  currentBlockedRequests = entries ?? [];
+  const list = document.getElementById("blocked-requests-list");
+  const clearButton = document.getElementById("clear-blocked-requests-button");
+  list.replaceChildren();
+  clearButton.hidden = currentBlockedRequests.length === 0;
+  if (currentBlockedRequests.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "tab-access-empty";
+    empty.textContent = "No blocked requests recorded.";
+    list.append(empty);
+    return;
+  }
+
+  currentBlockedRequests.forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "blocked-request-row";
+    const url = document.createElement("span");
+    url.className = "blocked-request-url";
+    url.textContent = entry.url;
+    const actions = document.createElement("div");
+    actions.className = "blocked-request-actions";
+    const allowButton = document.createElement("button");
+    allowButton.type = "button";
+    allowButton.className = "secondary small-button";
+    allowButton.textContent = "Allow";
+    allowButton.title = `Allow ${blockedRequestOrigin(entry.url)}`;
+    allowButton.addEventListener("click", () => void allowBlockedRequest(entry.url));
+    const dismissButton = document.createElement("button");
+    dismissButton.type = "button";
+    dismissButton.className = "secondary small-button";
+    dismissButton.textContent = "Dismiss";
+    dismissButton.addEventListener("click", () => void dismissBlockedRequest(entry.url));
+    actions.append(allowButton, dismissButton);
+    const meta = document.createElement("span");
+    meta.className = "blocked-request-meta";
+    const timeLabel = Date.parse(entry.time) > 0 ? new Date(entry.time).toLocaleString() : "";
+    meta.textContent = [entry.resourceType, entry.count > 1 ? `x${entry.count}` : null, timeLabel]
+      .filter(Boolean)
+      .join(" ");
+    row.append(url, actions, meta);
+    list.append(row);
+  });
+}
+
+async function allowBlockedRequest(url) {
+  const origin = blockedRequestOrigin(url);
+  if (!currentTabAccess.some((entry) => entry.url === origin)) {
+    await persistTabAccess([...currentTabAccess, { url: origin, enabled: true }]);
+  }
+  const response = await send("dismiss-blocked-request", { url });
+  if (!response.ok) {
+    throw new Error(response.error?.message ?? "Could not dismiss blocked request");
+  }
+  updateBlockedRequests(response.blockedRequests);
+}
+
+async function dismissBlockedRequest(url) {
+  const response = await send("dismiss-blocked-request", { url });
+  if (!response.ok) {
+    throw new Error(response.error?.message ?? "Could not dismiss blocked request");
+  }
+  updateBlockedRequests(response.blockedRequests);
+}
+
+async function clearBlockedRequests() {
+  const response = await send("clear-blocked-requests");
+  if (!response.ok) {
+    throw new Error(response.error?.message ?? "Could not clear blocked requests");
+  }
+  updateBlockedRequests(response.blockedRequests);
+}
+
 function updateConnectionButton(state) {
   const button = document.getElementById("connection-button");
   const bridgeConnected = Boolean(state.bridgeStatus);
@@ -143,6 +229,7 @@ async function refresh() {
   updatePortInput(response.settings ?? response.state.settings);
   updateAllowedIds(response.state.developmentReloadAllowedIds);
   updateTabAccess(response.state.tabAccessAllowlist);
+  updateBlockedRequests(response.state.blockedRequests);
   updateConnectionButton(response.state);
 }
 
@@ -208,6 +295,9 @@ document.getElementById("add-reload-id-button").addEventListener("click", () => 
 });
 document.getElementById("add-tab-access-button").addEventListener("click", () => {
   void addTabAccessUrl();
+});
+document.getElementById("clear-blocked-requests-button").addEventListener("click", () => {
+  void clearBlockedRequests();
 });
 document.getElementById("new-tab-access-url").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {

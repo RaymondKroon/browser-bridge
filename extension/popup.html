@@ -34,6 +34,12 @@
             <button id="add-tab-access-button" type="button" class="secondary">Add</button>
           </div>
         </section>
+        <section class="field stack" aria-label="Blocked requests">
+          <span>Blocked requests</span>
+          <span class="tab-access-hint">Requests the allowlist gate blocked. "Allow" adds the request's origin (scheme + host) to the allowlist.</span>
+          <div id="blocked-requests-list" class="blocked-requests-list"></div>
+          <button id="clear-blocked-requests-button" type="button" class="secondary" hidden>Clear list</button>
+        </section>
         <label class="field" for="bridge-port">
           <span>Port</span>
           <span class="field-control">
