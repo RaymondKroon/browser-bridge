@@ -124,6 +124,18 @@ function blockedRequestOrigin(url) {
   return url;
 }
 
+function blockedRequestPrefix(url) {
+  try {
+    const parsed = new URL(url);
+    if (["http:", "https:", "ws:", "wss:"].includes(parsed.protocol)) {
+      return parsed.origin + parsed.pathname;
+    }
+  } catch {
+    // Unparseable URL; fall back to trimming the query string and fragment.
+  }
+  return url.split(/[?#]/, 1)[0];
+}
+
 function updateBlockedRequests(entries) {
   currentBlockedRequests = entries ?? [];
   const list = document.getElementById("blocked-requests-list");
@@ -150,14 +162,20 @@ function updateBlockedRequests(entries) {
     allowButton.type = "button";
     allowButton.className = "secondary small-button";
     allowButton.textContent = "Allow";
-    allowButton.title = `Allow ${blockedRequestOrigin(entry.url)}`;
-    allowButton.addEventListener("click", () => void allowBlockedRequest(entry.url));
+    allowButton.title = `Allow ${blockedRequestPrefix(entry.url)}`;
+    allowButton.addEventListener("click", () => void allowBlockedRequest(entry.url, "prefix"));
+    const originButton = document.createElement("button");
+    originButton.type = "button";
+    originButton.className = "secondary small-button";
+    originButton.textContent = "Origin";
+    originButton.title = `Allow ${blockedRequestOrigin(entry.url)}`;
+    originButton.addEventListener("click", () => void allowBlockedRequest(entry.url, "origin"));
     const dismissButton = document.createElement("button");
     dismissButton.type = "button";
     dismissButton.className = "secondary small-button";
     dismissButton.textContent = "Dismiss";
     dismissButton.addEventListener("click", () => void dismissBlockedRequest(entry.url));
-    actions.append(allowButton, dismissButton);
+    actions.append(allowButton, originButton, dismissButton);
     const meta = document.createElement("span");
     meta.className = "blocked-request-meta";
     const timeLabel = Date.parse(entry.time) > 0 ? new Date(entry.time).toLocaleString() : "";
@@ -169,10 +187,10 @@ function updateBlockedRequests(entries) {
   });
 }
 
-async function allowBlockedRequest(url) {
-  const origin = blockedRequestOrigin(url);
-  if (!currentTabAccess.some((entry) => entry.url === origin)) {
-    await persistTabAccess([...currentTabAccess, { url: origin, enabled: true }]);
+async function allowBlockedRequest(url, scope) {
+  const target = scope === "origin" ? blockedRequestOrigin(url) : blockedRequestPrefix(url);
+  if (!currentTabAccess.some((entry) => entry.url === target)) {
+    await persistTabAccess([...currentTabAccess, { url: target, enabled: true }]);
   }
   const response = await send("dismiss-blocked-request", { url });
   if (!response.ok) {

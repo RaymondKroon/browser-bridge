@@ -36,7 +36,7 @@
         </section>
         <section class="field stack" aria-label="Blocked requests">
           <span>Blocked requests</span>
-          <span class="tab-access-hint">Requests the allowlist gate blocked. "Allow" adds the request's origin (scheme + host) to the allowlist.</span>
+          <span class="tab-access-hint">Requests the allowlist gate blocked. "Allow" adds the URL without its query string; "Origin" adds the whole scheme + host.</span>
           <div id="blocked-requests-list" class="blocked-requests-list"></div>
           <button id="clear-blocked-requests-button" type="button" class="secondary" hidden>Clear list</button>
         </section>
