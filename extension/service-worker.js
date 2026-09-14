@@ -436,7 +436,18 @@ async function assertTabAccessAllowed(url) {
 
 async function assertTabAccessForTab(tabId, { navigationUrl = null } = {}) {
   const tab = await chrome.tabs.get(tabId);
-  await assertTabAccessAllowed(tab.url ?? "about:blank");
+  const currentUrl = tab.url ?? "";
+  if (currentUrl === "") {
+    // A freshly created or still-navigating tab has no committed URL yet.
+    // There is nothing to allowlist here; the caller should retry once the
+    // navigation commits. Do not report this as a missing allowlist entry.
+    throw createError(
+      TAB_ACCESS_BLOCKED_CODE,
+      "Tab access blocked: the tab has no committed URL yet. Retry once the page finishes loading.",
+      { reason: "no-committed-url" }
+    );
+  }
+  await assertTabAccessAllowed(currentUrl);
   if (typeof navigationUrl === "string" && navigationUrl.length > 0) {
     await assertTabAccessAllowed(navigationUrl);
   }

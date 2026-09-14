@@ -934,6 +934,25 @@ test("service worker blocks attach for non-allowlisted tabs", async () => {
   ]);
 });
 
+test("service worker reports a clear error for tabs without a committed URL", async () => {
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 90, url: "", title: "" },
+    storedTabAccessAllowlist: allowUrls("https://allowed.example")
+  });
+
+  // A freshly created tab has url "" until the navigation commits. The
+  // error must say so — not claim a missing allowlist entry for "".
+  await assert.rejects(
+    harness.handleNativeRequest({ action: "attach", payload: { targetId: "page:90" } }),
+    /no committed URL yet/
+  );
+
+  // The allowlist must not be polluted with an empty entry.
+  assert.deepEqual(plain(harness.state.tabAccessAllowlist), [
+    { url: "https://allowed.example", enabled: true }
+  ]);
+});
+
 test("service worker blocks navigating a non-allowlisted tab to an allowlisted URL", async () => {
   const sentCommands = [];
   const harness = await loadServiceWorkerHarness({
