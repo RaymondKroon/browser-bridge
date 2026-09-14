@@ -482,7 +482,10 @@ function trackSpawnedTab(tab) {
   // Gate this tab's network as soon as possible. Without this, a
   // window.open() reference from the opener would allow same-origin
   // reads of disallowed pages that load ungated in the new tab.
-  void ensureDebuggerAttached(tab.id).catch(() => {
+  void (async () => {
+    const attachment = await ensureDebuggerAttached(tab.id);
+    attachment.extensionHeld = true;
+  })().catch(() => {
     // Best effort; policeSpawnedTabUrl reloads if the gate missed the load.
   });
   // If the initial document committed before this tab was tracked (e.g.
@@ -513,7 +516,8 @@ async function policeSpawnedTabUrl(tabId, url) {
   policedUrls.add(url);
   state.spawnedTabPolicedUrls.set(tabId, policedUrls);
   try {
-    await ensureDebuggerAttached(tabId);
+    const attachment = await ensureDebuggerAttached(tabId);
+    attachment.extensionHeld = true;
     await chrome.tabs.reload(tabId);
   } catch {
     // The tab may be gone or refuse the debugger; allow a later retry.
@@ -855,7 +859,8 @@ async function ensureDebuggerAttached(tabId) {
       tabId,
       targetId: makePageTargetId(tabId),
       rootSessions: new Set(),
-      childSessions: new Set()
+      childSessions: new Set(),
+      extensionHeld: false
     };
 
     state.rootAttachments.set(tabId, attachment);
@@ -929,6 +934,12 @@ async function cleanupTabAttachment(tabId) {
     return;
   }
 
+  // Extension-held attachments (the Fetch gate for spawned tabs) must
+  // survive agent attach/detach cycles; the tab closing removes them.
+  if (attachment.extensionHeld) {
+    return;
+  }
+
   try {
     await detachDebuggerTab(tabId);
   } catch {
@@ -998,12 +1009,9 @@ async function detachTarget({ sessionId, targetId }) {
     }
   }
 
-  state.rootAttachments.delete(tabId);
-  try {
-    await detachDebuggerTab(tabId);
-  } catch {
-    // Ignore detach races when the tab disappeared.
-  }
+  // cleanupTabAttachment keeps the debugger attached on extension-held
+  // tabs so the extension's Fetch gate survives this detach.
+  await cleanupTabAttachment(tabId);
 
   return {};
 }
@@ -1287,6 +1295,27 @@ async function createTarget(url) {
   if (typeof tab.id !== "number") {
     throw createError(-32603, "Browser did not return a tab id");
   }
+
+  // The tab starts loading before the Fetch gate can attach, and the Fetch
+  // domain never intercepts requests served from the HTTP cache. Without
+  // this, the agent's own initial load would fetch subresources ungated
+  // and keep serving them from cache on every later load. Gate the tab
+  // immediately and force one reloaded, fully-gated pass. bypassCache is
+  // required: a normal reload would be served from the cache the ungated
+  // initial load just populated, and cache hits are invisible to Fetch.
+  void (async () => {
+    try {
+      const attachment = await ensureDebuggerAttached(tab.id);
+      attachment.extensionHeld = true;
+      const current = await chrome.tabs.get(tab.id);
+      if (isTransientSpawnUrl(current.url ?? "")) {
+        return;
+      }
+      await chrome.tabs.reload(tab.id, { bypassCache: true });
+    } catch {
+      // The tab may be gone or refuse the debugger; nothing to gate.
+    }
+  })();
 
   return { targetId: makePageTargetId(tab.id), tabId: tab.id };
 }

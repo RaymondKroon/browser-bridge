@@ -36,6 +36,19 @@ Key invariants:
   the allowlist) is recorded in `blockedRequestsLog` (last 50 entries, deduped
   by URL) so the popup can show what was blocked and offer one-click origin
   allowlisting.
+- Tab access is strict: attaching to, detaching, or sending any command to a
+  tab whose current URL is not allowlisted is rejected — including
+  `Page.navigate` to an allowlisted URL and inert domain-enable commands
+  (`*.enable`). The agent's sanctioned path to an allowed site is
+  `Target.createTarget` (a new tab), which is gated on the destination URL.
+  Detaching never removes the debugger from extension-held tabs (spawned-tab
+  Fetch gates), so agent attach/detach cycles cannot ungate a tab.
+- Agent-created tabs are gated from the start: `Target.createTarget` attaches
+  the Fetch gate immediately and forces one reload, because the tab's
+  initial load otherwise beats the gate and the Fetch domain never
+  intercepts requests served from the HTTP cache. Without the reload, an
+  agent-created tab could fetch (and re-serve from cache) non-allowlisted
+  subresources ungated.
 - The development reload token never crosses the bridge (not in
   `bridgeStatus`/diagnostics); it travels only over native messaging.
 

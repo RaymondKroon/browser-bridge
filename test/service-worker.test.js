@@ -934,6 +934,141 @@ test("service worker blocks attach for non-allowlisted tabs", async () => {
   ]);
 });
 
+test("service worker blocks navigating a non-allowlisted tab to an allowlisted URL", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 62, url: "https://locked.example", title: "Locked" },
+    storedTabAccessAllowlist: allowUrls("https://allowed.example"),
+    debuggerSendCommand: async (debuggee, method) => {
+      sentCommands.push(method);
+      return {};
+    }
+  });
+  const sessionId = "root-session";
+  harness.state.sessions.set(sessionId, {
+    tabId: 62,
+    targetId: harness.makePageTargetId(62),
+    root: true
+  });
+
+  // The escape hatch is not allowed: neither through an existing session...
+  await assert.rejects(
+    harness.sendCommand({
+      method: "Page.navigate",
+      params: { url: "https://allowed.example/" },
+      sessionId
+    }),
+    /Tab access blocked/
+  );
+
+  // ...nor through a bare targetId.
+  await assert.rejects(
+    harness.sendCommand({
+      method: "Page.navigate",
+      params: { url: "https://allowed.example/" },
+      targetId: harness.makePageTargetId(62)
+    }),
+    /Tab access blocked/
+  );
+
+  assert.equal(sentCommands.length, 0);
+  assert.equal(harness.currentTab.url, "https://locked.example");
+});
+
+test("service worker blocks inert enable commands on non-allowlisted tabs", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 63, url: "https://locked.example", title: "Locked" },
+    storedTabAccessAllowlist: allowUrls("https://allowed.example"),
+    debuggerSendCommand: async (debuggee, method) => {
+      sentCommands.push(method);
+      return {};
+    }
+  });
+  const sessionId = "root-session";
+  harness.state.sessions.set(sessionId, {
+    tabId: 63,
+    targetId: harness.makePageTargetId(63),
+    root: true
+  });
+
+  for (const method of [
+    "Runtime.enable",
+    "Page.enable",
+    "Network.enable",
+    "DOM.enable",
+    "Log.enable"
+  ]) {
+    await assert.rejects(
+      harness.sendCommand({ method, params: {}, sessionId }),
+      /Tab access blocked/
+    );
+  }
+
+  assert.equal(sentCommands.length, 0);
+});
+
+test("service worker blocks reads and detach on non-allowlisted tabs", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 64, url: "https://locked.example", title: "Locked" },
+    storedTabAccessAllowlist: allowUrls("https://allowed.example"),
+    debuggerSendCommand: async (debuggee, method) => {
+      sentCommands.push(method);
+      return {};
+    }
+  });
+  const sessionId = "root-session";
+  harness.state.sessions.set(sessionId, {
+    tabId: 64,
+    targetId: harness.makePageTargetId(64),
+    root: true
+  });
+
+  await assert.rejects(
+    harness.sendCommand({
+      method: "Runtime.evaluate",
+      params: { expression: "document.title" },
+      sessionId
+    }),
+    /Tab access blocked/
+  );
+  await assert.rejects(
+    harness.handleNativeRequest({ action: "detach", payload: { targetId: "page:64" } }),
+    /Tab access blocked/
+  );
+
+  assert.equal(sentCommands.length, 0);
+});
+
+test("service worker keeps extension-held Fetch gate across agent attach/detach", async () => {
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 65, url: "https://allowed.example", title: "Allowed" },
+    storedTabAccessAllowlist: allowUrls("https://allowed.example")
+  });
+  harness.state.rootAttachments.set(65, {
+    tabId: 65,
+    targetId: harness.makePageTargetId(65),
+    rootSessions: new Set(),
+    childSessions: new Set(),
+    extensionHeld: true
+  });
+
+  const attached = await harness.handleNativeRequest({
+    action: "attach",
+    payload: { targetId: "page:65" }
+  });
+  await harness.handleNativeRequest({
+    action: "detach",
+    payload: { sessionId: attached.sessionId }
+  });
+
+  // The debugger attachment must survive the agent cycle so the
+  // extension's Fetch gate (e.g. for a spawned tab) stays active.
+  assert.equal(harness.state.rootAttachments.has(65), true);
+  assert.equal(harness.state.rootAttachments.get(65).extensionHeld, true);
+});
+
 test("service worker blocks createTarget for non-allowlisted URLs", async () => {
   const harness = await loadServiceWorkerHarness();
 
@@ -948,6 +1083,40 @@ test("service worker blocks createTarget for non-allowlisted URLs", async () => 
   assert.deepEqual(plain(harness.state.tabAccessAllowlist), [
     { url: "https://nope.example", enabled: false }
   ]);
+});
+
+test("service worker forces a gated reload for the initial load of created tabs", async () => {
+  const harness = await loadServiceWorkerHarness({
+    storedTabAccessAllowlist: allowUrls("https://allowed.example"),
+    debuggerSendCommand: async () => ({})
+  });
+
+  const created = await harness.handleNativeRequest({
+    action: "createTarget",
+    payload: { url: "https://allowed.example/" }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // The initial load beats the Fetch gate, so the tab must be reloaded
+  // once the gate is active — and the gate must survive agent detach.
+  assert.deepEqual(harness.reloadCalls, [created.tabId]);
+  assert.equal(harness.state.rootAttachments.get(created.tabId)?.extensionHeld, true);
+});
+
+test("service worker does not reload transient created tabs", async () => {
+  const harness = await loadServiceWorkerHarness({
+    storedTabAccessAllowlist: allowUrls("about:blank"),
+    debuggerSendCommand: async () => ({})
+  });
+
+  const created = await harness.handleNativeRequest({
+    action: "createTarget",
+    payload: { url: "about:blank" }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(typeof created.tabId, "number");
+  assert.deepEqual(harness.reloadCalls, []);
 });
 
 test("service worker persists popup tab access allowlist updates", async () => {
