@@ -88,6 +88,8 @@ const BLOCKED_REQUESTS_STORAGE_KEY = "blockedRequestsLog";
 const BLOCKED_REQUESTS_MAX_ENTRIES = 50;
 const CRASH_LOG_STORAGE_KEY = "crashLog";
 const CRASH_LOG_MAX_ENTRIES = 50;
+const ATTACH_LOG_STORAGE_KEY = "attachLog";
+const ATTACH_LOG_MAX_ENTRIES = 50;
 const TAB_ACCESS_BLOCKED_CODE = -32003;
 const INTERNAL_PAGE_NOOP_METHODS = new Set([
   "Page.enable",
@@ -116,6 +118,7 @@ const state = {
   tabAccessAllowlist: [],
   settingsLoaded: false,
   blockedRequests: [],
+  attachLog: [],
   rootAttachments: new Map(),
   sessions: new Map(),
   spawnedTabs: new Map(),
@@ -193,7 +196,8 @@ async function loadSettings() {
     BRIDGE_SETTINGS_STORAGE_KEY,
     DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY,
     TAB_ACCESS_STORAGE_KEY,
-    BLOCKED_REQUESTS_STORAGE_KEY
+    BLOCKED_REQUESTS_STORAGE_KEY,
+    ATTACH_LOG_STORAGE_KEY
   ]);
   state.settings = {
     port: normalizeBridgePort(stored?.[BRIDGE_SETTINGS_STORAGE_KEY]?.port)
@@ -203,6 +207,7 @@ async function loadSettings() {
   );
   state.tabAccessAllowlist = normalizeTabAccessAllowlist(stored?.[TAB_ACCESS_STORAGE_KEY]);
   state.blockedRequests = normalizeBlockedRequests(stored?.[BLOCKED_REQUESTS_STORAGE_KEY]);
+  state.attachLog = normalizeAttachLog(stored?.[ATTACH_LOG_STORAGE_KEY]);
   state.settingsLoaded = true;
   return state.settings;
 }
@@ -292,6 +297,27 @@ async function recordBlockedRequest({ url, resourceType, tabId }) {
   } catch {
     // Keep the in-memory entry even if persistence fails; the popup reads state.
   }
+}
+
+function normalizeAttachLog(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item) => item && typeof item === "object" && typeof item.time === "string")
+    .slice(0, ATTACH_LOG_MAX_ENTRIES);
+}
+
+// Diagnostics: record every extension-initiated debugger attach so we can
+// answer "why is this tab gated?" (trigger, opener tab, URL at attach time).
+function recordAttachLog(entry) {
+  state.attachLog.unshift({ time: new Date().toISOString(), ...entry });
+  state.attachLog = state.attachLog.slice(0, ATTACH_LOG_MAX_ENTRIES);
+  void chrome.storage.local
+    .set({ [ATTACH_LOG_STORAGE_KEY]: state.attachLog })
+    .catch(() => {
+      // Keep the in-memory entry even if persistence fails.
+    });
 }
 
 function normalizeTabAccessAllowlist(value) {
@@ -494,7 +520,7 @@ function trackSpawnedTab(tab) {
   // window.open() reference from the opener would allow same-origin
   // reads of disallowed pages that load ungated in the new tab.
   void (async () => {
-    const attachment = await ensureDebuggerAttached(tab.id);
+    const attachment = await ensureDebuggerAttached(tab.id, "spawned-tab");
     attachment.extensionHeld = true;
   })().catch(() => {
     // Best effort; policeSpawnedTabUrl reloads if the gate missed the load.
@@ -527,9 +553,10 @@ async function policeSpawnedTabUrl(tabId, url) {
   policedUrls.add(url);
   state.spawnedTabPolicedUrls.set(tabId, policedUrls);
   try {
-    const attachment = await ensureDebuggerAttached(tabId);
+    const attachment = await ensureDebuggerAttached(tabId, "police-reload");
     attachment.extensionHeld = true;
-    await chrome.tabs.reload(tabId);
+    // bypassCache: a cache-served reload would skip the Fetch gate.
+    await chrome.tabs.reload(tabId, { bypassCache: true });
   } catch {
     // The tab may be gone or refuse the debugger; allow a later retry.
     state.spawnedTabPolicedUrls.delete(tabId);
@@ -753,6 +780,8 @@ async function detachDebuggerTab(tabId) {
   }
 }
 
+let nativePortPromise = null;
+
 async function ensureNativePort() {
   await loadSettings();
 
@@ -761,48 +790,61 @@ async function ensureNativePort() {
     return state.nativePort;
   }
 
-  state.stoppingHost = false;
-  const port = chrome.runtime.connectNative(HOST_NAME);
-  state.nativePort = port;
-  state.nativeConnected = true;
-  state.bridgeStatus = null;
-  state.developmentReloadToken = null;
-  state.lastError = null;
-  refreshActionState();
+  // Dedupe concurrent callers (boot auto-connect vs. popup Start): without
+  // this, two connectNative calls launch two native hosts, the second hits
+  // EADDRINUSE, and an orphaned host can keep holding the bridge port.
+  if (nativePortPromise) {
+    return nativePortPromise;
+  }
 
-  port.onMessage.addListener((message) => {
-    void handleNativeMessage(message);
-  });
-
-  port.onDisconnect.addListener(() => {
-    const wasStopping = state.stoppingHost;
+  nativePortPromise = (async () => {
     state.stoppingHost = false;
-    state.nativeConnected = false;
-    state.nativePort = null;
+    const port = chrome.runtime.connectNative(HOST_NAME);
+    state.nativePort = port;
+    state.nativeConnected = true;
     state.bridgeStatus = null;
     state.developmentReloadToken = null;
-    state.lastError = wasStopping
-      ? null
-      : chrome.runtime.lastError?.message ?? "Native host disconnected";
-    void appendCrashLog({
-      type: "port-disconnect",
-      stopping: wasStopping,
-      lastError: chrome.runtime.lastError?.message ?? null
-    });
+    state.lastError = null;
     refreshActionState();
+
+    port.onMessage.addListener((message) => {
+      void handleNativeMessage(message);
+    });
+
+    port.onDisconnect.addListener(() => {
+      const wasStopping = state.stoppingHost;
+      state.stoppingHost = false;
+      state.nativeConnected = false;
+      state.nativePort = null;
+      state.bridgeStatus = null;
+      state.developmentReloadToken = null;
+      state.lastError = wasStopping
+        ? null
+        : chrome.runtime.lastError?.message ?? "Native host disconnected";
+      void appendCrashLog({
+        type: "port-disconnect",
+        stopping: wasStopping,
+        lastError: chrome.runtime.lastError?.message ?? null
+      });
+      refreshActionState();
+    });
+
+    port.postMessage({
+      type: "hello",
+      version: "0.1.0",
+      bridgePort: state.settings.port
+    });
+
+    await waitForBridgeStatus();
+    return port;
+  })().finally(() => {
+    nativePortPromise = null;
   });
 
-  port.postMessage({
-    type: "hello",
-    version: "0.1.0",
-    bridgePort: state.settings.port
-  });
-
-  await waitForBridgeStatus();
-  return port;
+  return nativePortPromise;
 }
 
-async function waitForBridgeStatus(timeoutMs = 5000) {
+async function waitForBridgeStatus(timeoutMs = 20000) {
   const start = Date.now();
 
   while (Date.now() - start < timeoutMs) {
@@ -921,8 +963,13 @@ function compareTabsForDiscovery(left, right) {
 }
 
 const attachmentPromises = new Map();
+// Tabs whose move into the "gated" group is in flight: the group is created
+// together with the tab and styled afterwards, so the membership event
+// fires before the group has its "gated" title. The membership watcher must
+// ignore those events or it would ungate the tab right after gating it.
+const gatedGroupMovesInFlight = new Set();
 
-async function ensureDebuggerAttached(tabId) {
+async function ensureDebuggerAttached(tabId, reason = "unknown") {
   if (state.rootAttachments.has(tabId)) {
     return state.rootAttachments.get(tabId);
   }
@@ -945,6 +992,18 @@ async function ensureDebuggerAttached(tabId) {
     state.rootAttachments.set(tabId, attachment);
 
     try {
+      const attachedTab = await chrome.tabs.get(tabId).catch(() => null);
+      recordAttachLog({
+        reason,
+        tabId,
+        openerTabId: attachedTab?.openerTabId ?? null,
+        url: attachedTab?.url ?? null
+      });
+    } catch {
+      // Logging must never break the attach path.
+    }
+
+    try {
       await chrome.debugger.sendCommand(
         { tabId },
         "Target.setAutoAttach",
@@ -963,6 +1022,22 @@ async function ensureDebuggerAttached(tabId) {
       await chrome.debugger.sendCommand({ tabId }, "Fetch.enable", {});
     } catch {
       // Fetch gating is best-effort; the command-level checks still apply.
+    }
+
+    // Mark the tab in the tab strip: the red "gated" group is the primary
+    // indication; the gated favicon is the fallback for tabs that cannot be
+    // grouped (pinned tabs and special pages).
+    const grouped = await addTabToGatedGroup(tabId);
+    if (!grouped) {
+      attachment.usesGatedFavicon = true;
+      try {
+        await chrome.debugger.sendCommand({ tabId }, "Page.addScriptToEvaluateOnNewDocument", {
+          source: GATED_FAVICON_INSTALL_SCRIPT
+        });
+      } catch {
+        // Best-effort; the current-document injection below still applies.
+      }
+      void installGatedFavicon(tabId);
     }
 
     return attachment;
@@ -1028,6 +1103,351 @@ async function cleanupTabAttachment(tabId) {
   state.rootAttachments.delete(tabId);
 }
 
+// Visual indication in the tab strip: gated tabs get a marker prefixed to
+// their title. The page can reassert its title at any time, so the marker is
+// re-applied on every title change while the tab stays gated, and stripped
+// again on ungate/detach.
+// Visual indication in the tab strip: gated tabs get a "no entry" favicon.
+// The tabs API cannot set favicons, so the icon is swapped from inside the
+// page (CDP). The install script is registered for every new document while
+// the tab stays gated, re-asserts itself against page favicon changes, and
+// remembers the original icon; the restore script runs on ungate (before
+// detach, the last chance to get into the page).
+const GATED_FAVICON_HREF =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23dc2626'/%3E%3Crect x='6' y='13' width='20' height='6' rx='2' fill='white'/%3E%3C/svg%3E";
+
+const GATED_FAVICON_INSTALL_SCRIPT = `(() => {
+  if (window.__cdtBridgeGatedIcon) return;
+  window.__cdtBridgeGatedIcon = true;
+  const HREF = ${JSON.stringify(GATED_FAVICON_HREF)};
+  const ATTR = "data-cdt-gated-icon";
+  const saveOriginal = (link) => {
+    if (!window.__cdtBridgeGatedIconOriginal && link && link.href) {
+      window.__cdtBridgeGatedIconOriginal = link.href;
+    }
+  };
+  const assertIcon = () => {
+    try {
+      let ours = document.querySelector("link[" + ATTR + "]");
+      if (!ours) {
+        ours = document.createElement("link");
+        ours.rel = "icon";
+        ours.setAttribute(ATTR, "1");
+        (document.head || document.documentElement).appendChild(ours);
+        ours.href = HREF;
+      }
+      const others = document.querySelectorAll('link[rel*="icon"]:not([' + ATTR + '])');
+      for (const other of others) {
+        saveOriginal(other);
+        other.remove();
+      }
+    } catch {}
+  };
+  assertIcon();
+  try {
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        const nodes = [
+          ...(mutation.type === "attributes" ? [mutation.target] : []),
+          ...mutation.addedNodes,
+          ...mutation.removedNodes
+        ];
+        if (nodes.some((node) => node && node.nodeType === 1 && node.tagName === "LINK")) {
+          assertIcon();
+          return;
+        }
+      }
+    });
+    observer.observe(document.head || document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["rel", "href"]
+    });
+  } catch {}
+})();`;
+
+const GATED_FAVICON_RESTORE_SCRIPT = `(() => {
+  try {
+    const ours = document.querySelector("link[data-cdt-gated-icon]");
+    if (ours) ours.remove();
+    const original = window.__cdtBridgeGatedIconOriginal;
+    if (original) {
+      const link = document.createElement("link");
+      link.rel = "icon";
+      link.href = original;
+      (document.head || document.documentElement).appendChild(link);
+    }
+    delete window.__cdtBridgeGatedIcon;
+    delete window.__cdtBridgeGatedIconOriginal;
+  } catch {}
+})();`;
+
+const GATED_TAB_GROUP_TITLE = "gated";
+const GATED_TAB_GROUP_COLOR = "red";
+// The tabGroups API requires the "tabGroups" manifest permission; without it
+// (or in browser builds without the API) chrome.tabGroups is undefined and
+// the group indication/control is skipped — the favicon and gate still work.
+const hasTabGroupsApi = Boolean(chrome.tabGroups?.query);
+
+// Chrome reports the tab's group as `groupId` (older builds: `tabGroupId`).
+function getTabGroupId(tab) {
+  return tab?.groupId ?? tab?.tabGroupId ?? chrome.tabGroups.TAB_GROUP_ID_NONE;
+}
+
+// Group indication and control: gated tabs live in a red "gated" tab group
+// (one per window, created on demand for the session). Group membership is
+// the gate state: a gated tab that leaves the group is ungated
+// automatically (see the tabs.onUpdated membership watcher below). Tabs are
+// moved out of user groups when they get gated; pinned and special tabs
+// cannot be grouped and are skipped (the gated favicon marks them instead).
+// The tabGroups API only manages group properties; group creation and
+// membership moves use chrome.tabs.group/ungroup (a group is created
+// together with its first tab; Chrome deletes it when the last tab
+// leaves). Best-effort throughout. Returns whether the tab is in the
+// "gated" group (the favicon fallback applies when it is not).
+async function addTabToGatedGroup(tabId) {
+  if (!hasTabGroupsApi) {
+    return false;
+  }
+  gatedGroupMovesInFlight.add(tabId);
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const existing = await chrome.tabGroups.query({
+      title: GATED_TAB_GROUP_TITLE,
+      windowId: tab.windowId
+    });
+    if (existing.length > 0) {
+      if (getTabGroupId(tab) !== existing[0].id) {
+        await chrome.tabs.group({ tabIds: [tabId], groupId: existing[0].id });
+      }
+      return true;
+    }
+    // No "gated" group in this window yet: create it together with the tab
+    // (the tabGroups API cannot create empty groups), then style it.
+    const groupId = await chrome.tabs.group({
+      tabIds: [tabId],
+      createProperties: { windowId: tab.windowId }
+    });
+    await chrome.tabGroups.update(groupId, {
+      title: GATED_TAB_GROUP_TITLE,
+      color: GATED_TAB_GROUP_COLOR
+    });
+    return true;
+  } catch {
+    // Grouping is best-effort; the favicon still marks the tab.
+    return false;
+  } finally {
+    gatedGroupMovesInFlight.delete(tabId);
+  }
+}
+
+async function removeTabFromGatedGroup(tabId) {
+  if (!hasTabGroupsApi) {
+    return;
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const groupId = getTabGroupId(tab);
+    if (groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+      return;
+    }
+    const group = (await chrome.tabGroups.query({})).find(
+      (candidate) => candidate.id === groupId && candidate.title === GATED_TAB_GROUP_TITLE
+    );
+    if (!group) {
+      return; // The tab is in a user group; do not touch it.
+    }
+    // Chrome deletes the group when its last tab leaves.
+    await chrome.tabs.ungroup([tabId]);
+  } catch {
+    // Best-effort; the tab may be gone.
+  }
+}
+
+// A (re)gated tab that is sitting on a disallowed URL must be reloaded so
+// the fresh document request is intercepted by the Fetch gate; otherwise
+// the already-loaded page stays fully readable. bypassCache forces a real
+// network request — a cache-served reload would skip the gate entirely.
+async function policeGatedTabUrl(tabId, url) {
+  if (!url || isTransientSpawnUrl(url) || isBrowserInternalUrl(url) || isTabUrlAllowed(url)) {
+    return;
+  }
+  try {
+    await chrome.tabs.reload(tabId, { bypassCache: true });
+  } catch {
+    // The tab may be gone.
+  }
+}
+
+// The debugger attachment does not survive a service worker restart (idle
+// termination or extension reload), but the "gated" group does. Group
+// membership is the persistent gate state, so on every boot every tab still
+// in the group is gated again; tabs sitting on a disallowed URL are
+// reloaded so the Fetch gate blocks the document. Returns a summary for the
+// boot log so a silently failing restore is visible in diagnostics.
+async function restoreGatedGroupTabs() {
+  const summary = { groups: 0, tabs: 0, restored: [], failed: [] };
+  if (!hasTabGroupsApi) {
+    return summary;
+  }
+  let groups = [];
+  try {
+    groups = await chrome.tabGroups.query({ title: GATED_TAB_GROUP_TITLE });
+  } catch (error) {
+    summary.error = String(error?.message ?? error);
+    return summary;
+  }
+  summary.groups = groups.length;
+  for (const group of groups) {
+    let tabs = [];
+    try {
+      tabs = await chrome.tabs.query({ groupId: group.id });
+    } catch {
+      continue;
+    }
+    for (const tab of tabs) {
+      if (typeof tab.id !== "number") {
+        continue;
+      }
+      summary.tabs += 1;
+      try {
+        const attachment = await ensureDebuggerAttached(tab.id, "group-restore");
+        attachment.extensionHeld = true;
+        await policeGatedTabUrl(tab.id, tab.url);
+        summary.restored.push(tab.id);
+      } catch (error) {
+        summary.failed.push({
+          tabId: tab.id,
+          url: tab.url ?? null,
+          error: String(error?.message ?? error)
+        });
+      }
+    }
+  }
+  return summary;
+}
+
+// Group membership is the gate state in both directions: a gated tab that
+// leaves the "gated" group is ungated, and a tab the user moves into the
+// group is gated (extension-held, like a spawned tab; the user's drag is
+// the authorization, so no allowlist check).
+async function handleGatedGroupMembership(tabId) {
+  if (gatedGroupMovesInFlight.has(tabId)) {
+    return; // Our own move; the tab is already gated.
+  }
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) {
+    return;
+  }
+  const groupId = getTabGroupId(tab);
+  let inGatedGroup = false;
+  if (groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    const group = (await chrome.tabGroups.query({})).find(
+      (candidate) => candidate.id === groupId
+    );
+    inGatedGroup = group?.title === GATED_TAB_GROUP_TITLE;
+  }
+  const attachment = state.rootAttachments.get(tabId);
+  if (inGatedGroup) {
+    if (!attachment || attachment.releasing) {
+      const newAttachment = await ensureDebuggerAttached(tabId, "group-gate");
+      newAttachment.extensionHeld = true;
+      await policeGatedTabUrl(tabId, tab.url);
+    }
+    return;
+  }
+  if (attachment && !attachment.releasing) {
+    await ungateTab(tabId);
+  }
+}
+
+async function evaluateGatedFavicon(tabId, script) {
+  try {
+    await Promise.race([
+      chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: script }),
+      new Promise((resolve) => setTimeout(resolve, 2000))
+    ]);
+  } catch {
+    // The tab may be gone, mid-navigation, or a page where JS cannot run.
+  }
+}
+
+// Install the gated favicon in the current document. The document's JS
+// context may not exist yet right after attach or at URL commit, so retry
+// briefly. The script is idempotent per document, and the on-new-document
+// registration covers documents created meanwhile.
+async function installGatedFavicon(tabId) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (!state.rootAttachments.has(tabId)) {
+      return;
+    }
+    try {
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+        expression: GATED_FAVICON_INSTALL_SCRIPT
+      });
+      return;
+    } catch {
+      // No execution context yet (or mid-navigation); retry.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+// User-initiated (popup): release a tab from the extension's debugger gate
+// entirely. The agent can attach (and re-gate) the tab again later if it
+// needs it; until then the tab loads and browses like any normal tab.
+async function ungateTab(tabId) {
+  const attachment = state.rootAttachments.get(tabId);
+  if (!attachment) {
+    throw createError(-32000, `Tab ${tabId} is not gated`, { tabId });
+  }
+  if (attachment.releasing) {
+    return { ungated: true, tabId };
+  }
+  attachment.releasing = true;
+
+  attachment.extensionHeld = false;
+  state.spawnedTabs.delete(tabId);
+  state.spawnedTabPolicedUrls.delete(tabId);
+
+  // Drop this tab's sessions so the detach is a full cleanup, not an
+  // agent detach that cleanupTabAttachment would try to preserve.
+  for (const [sessionId, session] of state.sessions.entries()) {
+    if (session.tabId !== tabId) {
+      continue;
+    }
+    state.sessions.delete(sessionId);
+    if (session.root) {
+      attachment.rootSessions.delete(sessionId);
+    } else {
+      attachment.childSessions.delete(sessionId);
+    }
+  }
+
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  // Restore the favicon while the debugger is still attached; after detach
+  // there is no way back into the page.
+  if (attachment.usesGatedFavicon) {
+    await evaluateGatedFavicon(tabId, GATED_FAVICON_RESTORE_SCRIPT);
+  }
+  await removeTabFromGatedGroup(tabId);
+  try {
+    await detachDebuggerTab(tabId);
+  } catch {
+    // The debugger may already be gone (user cancelled the infobar);
+    // onDetach has cleaned up what it could, finish the job below.
+  }
+  state.rootAttachments.delete(tabId);
+  recordAttachLog({
+    reason: "ungate",
+    tabId,
+    openerTabId: tab?.openerTabId ?? null,
+    url: tab?.url ?? null
+  });
+  return { ungated: true, tabId };
+}
+
 async function attachTarget(targetId) {
   const tabId = parsePageTargetId(targetId);
   if (!Number.isInteger(tabId)) {
@@ -1049,7 +1469,7 @@ async function ensureRootSessionAttached(sessionId) {
     return session;
   }
 
-  const attachment = await ensureDebuggerAttached(session.tabId);
+  const attachment = await ensureDebuggerAttached(session.tabId, "agent-attach");
   attachment.rootSessions.add(sessionId);
   return session;
 }
@@ -1111,7 +1531,7 @@ async function resolveDebuggee({ targetId, sessionId }) {
     throw createError(-32602, "sendCommand requires a known sessionId or page targetId");
   }
 
-  await ensureDebuggerAttached(tabId);
+  await ensureDebuggerAttached(tabId, "agent-command");
   return {
     tabId,
     debuggee: { tabId },
@@ -1384,7 +1804,7 @@ async function createTarget(url) {
   // initial load just populated, and cache hits are invisible to Fetch.
   void (async () => {
     try {
-      const attachment = await ensureDebuggerAttached(tab.id);
+      const attachment = await ensureDebuggerAttached(tab.id, "agent-created");
       attachment.extensionHeld = true;
       const current = await chrome.tabs.get(tab.id);
       if (isTransientSpawnUrl(current.url ?? "")) {
@@ -1453,6 +1873,7 @@ async function getDiagnostics() {
     developmentReloadAllowedIds: state.developmentReloadAllowedIds,
     tabAccessAllowlist: state.tabAccessAllowlist,
     blockedRequests: state.blockedRequests,
+    attachLog: state.attachLog,
     crashLog: await loadCrashLog()
   };
 }
@@ -1662,6 +2083,11 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     }
   }
 
+  // Note: if the debugger detaches for external reasons (user cancels the
+  // debug infobar) the gated favicon cannot be restored anymore; it stays
+  // until the tab is ungated from the popup or the page is reloaded after
+  // the detach.
+  void removeTabFromGatedGroup(source.tabId);
   state.rootAttachments.delete(source.tabId);
   if (wasInternalNavigation) {
     state.internalNavigationTabs.delete(source.tabId);
@@ -1698,6 +2124,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     void policeSpawnedTabUrl(tabId, changeInfo.url);
   }
 
+  // A new document committed; make sure the gated favicon install script
+  // ran in it (favicon-fallback tabs only; grouped tabs are marked by the
+  // group). The on-new-document registration can miss the very first
+  // document of an agent-created tab (it commits after the attach, and the
+  // one-shot injection raced the load). The script is idempotent per
+  // document, so extra calls on redirects are no-ops.
+  if (changeInfo.url && state.rootAttachments.get(tabId)?.usesGatedFavicon) {
+    void installGatedFavicon(tabId);
+  }
+
   const pendingNavigation = state.pendingInternalNavigations.get(tabId);
   const tabUrl = tab.url ?? changeInfo.url ?? "about:blank";
   if (!pendingNavigation || !isBrowserInternalUrl(tabUrl)) {
@@ -1728,6 +2164,24 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.spawnedTabPolicedUrls.delete(tabId);
   emitTargetLifecycle("targetDestroyed", makePageTargetId(tabId));
 });
+
+// Group membership is the gate state in both directions: a gated tab that
+// leaves the "gated" group (dragged out, moved to another group, group
+// deleted) is ungated automatically, and a tab the user moves into the
+// group is gated. Current Chrome removed tabGroups.onChanged, so membership
+// changes are watched via tabs.onUpdated (changeInfo.groupId). The
+// releasing flag and the in-flight set guard against re-entrant and
+// self-triggered transitions.
+if (hasTabGroupsApi) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo?.groupId === undefined) {
+      return;
+    }
+    void handleGatedGroupMembership(tabId).catch(() => {
+      // The tab may be gone or the transition may have raced.
+    });
+  });
+}
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   void (async () => {
@@ -1816,6 +2270,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             tabAccessAllowlist: await saveTabAccessAllowlist(message.entries)
           });
           return;
+        case "ungate-tab": {
+          const tabId = Number(message.tabId);
+          if (!Number.isInteger(tabId) || tabId < 0) {
+            throw createError(-32602, "ungate-tab requires a numeric tabId");
+          }
+          const result = await ungateTab(tabId);
+          sendResponse({ ok: true, ...result, state: await getDiagnostics() });
+          return;
+        }
         case "dismiss-blocked-request":
           state.blockedRequests = state.blockedRequests.filter(
             (entry) => entry.url !== message.url
@@ -1842,11 +2305,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+// Development-only self-reload: the native host's loopback reload endpoint
+// forwards an allowlisted extension ID here, and this extension sends the
+// fixed reload message to that ID. With its own ID allowlisted (and in
+// externally_connectable), the same flow reloads this extension so the
+// development loop does not need a manual chrome://extensions reload.
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (message?.type !== DEV_RELOAD_MESSAGE_TYPE) {
+    return;
+  }
+  if (sender.id !== chrome.runtime.id) {
+    sendResponse({ ok: false, error: "Unauthorized development reload request" });
+    return;
+  }
+  // Acknowledge before the worker is torn down by the reload.
+  sendResponse({ ok: true });
+  setTimeout(() => chrome.runtime.reload(), 0);
+});
+
 refreshActionState();
 
 void (async () => {
-  await appendCrashLog({ type: "boot" });
   await loadSettings();
+  const groupRestore = await restoreGatedGroupTabs();
+  await appendCrashLog({ type: "boot", tabGroupsApi: hasTabGroupsApi, groupRestore });
   await ensureNativePort();
 })().catch((error) => {
   state.lastError = error.message;

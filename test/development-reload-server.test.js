@@ -101,3 +101,52 @@ test("development reload server defaults to unauthenticated loopback requests", 
     await server.stop();
   }
 });
+
+import http from "node:http";
+
+async function listenOnFreePort() {
+  const holder = http.createServer();
+  await new Promise((resolve, reject) => {
+    holder.once("error", reject);
+    holder.listen(0, "127.0.0.1", resolve);
+  });
+  return holder;
+}
+
+test("development reload server retries while the port is being released", async () => {
+  const holder = await listenOnFreePort();
+  const port = holder.address().port;
+  setTimeout(() => holder.close(), 30);
+
+  const server = new DevelopmentReloadServer({
+    config: { port, requireToken: false },
+    transport: { request: async () => ({ ok: true }) },
+    logger: { warn() {} },
+    bindAttempts: 5,
+    bindRetryDelayMs: 20
+  });
+  await server.start();
+  try {
+    assert.equal(server.server.address().port, port);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("development reload server fails after retries when the port stays occupied", async () => {
+  const holder = await listenOnFreePort();
+  const port = holder.address().port;
+
+  const server = new DevelopmentReloadServer({
+    config: { port, requireToken: false },
+    transport: { request: async () => ({ ok: true }) },
+    logger: { warn() {} },
+    bindAttempts: 2,
+    bindRetryDelayMs: 10
+  });
+  await assert.rejects(
+    () => server.start(),
+    (error) => error.code === "EADDRINUSE"
+  );
+  holder.close();
+});

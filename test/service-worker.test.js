@@ -9,6 +9,7 @@ const serviceWorkerPath = path.resolve(process.cwd(), "extension", "service-work
 async function loadServiceWorkerHarness({
   tab = { id: 1, url: "about:blank", title: "Blank" },
   windows = undefined,
+  tabGroupsApi = true,
   storedBridgeSettings = undefined,
   storedTabAccessAllowlist = undefined,
   storedBlockedRequestsLog = undefined,
@@ -22,9 +23,11 @@ async function loadServiceWorkerHarness({
     /\nrefreshActionState\(\);\n\nvoid \(async \(\) => \{\n[\s\S]*?\n\}\)\(\)\.catch\(\(error\) => \{\n[\s\S]*?\n\}\);\n?$/,
     "\n"
   );
-  source += "\n;globalThis.__serviceWorkerTestExports = { sendCommand, handleNativeRequest, state, makePageTargetId, loadSettings, ensureNativePort };\n";
+  source += "\n;globalThis.__serviceWorkerTestExports = { sendCommand, handleNativeRequest, state, makePageTargetId, loadSettings, ensureNativePort, restoreGatedGroupTabs, GATED_FAVICON_INSTALL_SCRIPT, GATED_FAVICON_RESTORE_SCRIPT };\n";
 
   const runtimeListeners = [];
+  const externalMessageListeners = [];
+  let runtimeReloadCalls = 0;
   const selfListeners = {};
   const debuggerEventListeners = [];
   const debuggerDetachListeners = [];
@@ -37,6 +40,9 @@ async function loadServiceWorkerHarness({
     updated: [],
     removed: []
   };
+  const tabGroupCalls = [];
+  const tabGroups = new Map();
+  let nextGroupId = 4242;
   const windowMap = new Map();
   const seedWindows =
     windows ??
@@ -64,6 +70,7 @@ async function loadServiceWorkerHarness({
         windowId: seedWindow.id,
         index: seedTab.index ?? normalizedWindow.tabs.length,
         active: Boolean(seedTab.active),
+        tabGroupId: seedTab.tabGroupId ?? -1,
         ...seedTab
       };
       tabs.set(normalizedTab.id, normalizedTab);
@@ -116,6 +123,7 @@ async function loadServiceWorkerHarness({
   };
   const chrome = {
     runtime: {
+      id: "kbnaphbhjlbdmpekigjhfgogcimcpamf",
       connectNative() {
         return nativePort;
       },
@@ -129,6 +137,14 @@ async function loadServiceWorkerHarness({
         addListener(listener) {
           runtimeListeners.push(listener);
         }
+      },
+      onMessageExternal: {
+        addListener(listener) {
+          externalMessageListeners.push(listener);
+        }
+      },
+      reload() {
+        runtimeReloadCalls += 1;
       },
       lastError: null
     },
@@ -171,8 +187,13 @@ async function loadServiceWorkerHarness({
       }
     },
     tabs: {
-      async query() {
-        return [...tabs.values()].map((value) => ({ ...value }));
+      async query(queryInfo) {
+        return [...tabs.values()]
+          .filter(
+            (value) =>
+              queryInfo?.groupId === undefined || value.tabGroupId === queryInfo.groupId
+          )
+          .map((value) => ({ ...value }));
       },
       async get(tabId) {
         assert.equal(tabs.has(tabId), true);
@@ -194,6 +215,55 @@ async function loadServiceWorkerHarness({
         }
         return { ...currentTab };
       },
+      async group(options) {
+        const tabIds = Array.isArray(options.tabIds) ? options.tabIds : [options.tabIds];
+        let groupId = options.groupId;
+        if (groupId === undefined) {
+          groupId = nextGroupId++;
+          tabGroups.set(groupId, {
+            id: groupId,
+            title: "",
+            color: undefined,
+            windowId: options.createProperties?.windowId ?? 1
+          });
+        }
+        tabGroupCalls.push({
+          fn: "group",
+          tabIds,
+          groupId,
+          created: options.groupId === undefined
+        });
+        for (const id of tabIds) {
+          const current = tabs.get(id);
+          if (!current) {
+            continue;
+          }
+          current.tabGroupId = groupId;
+          for (const listener of tabListeners.updated) {
+            listener(id, { groupId }, { ...current });
+          }
+        }
+        return groupId;
+      },
+      async ungroup(tabIds) {
+        const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
+        tabGroupCalls.push({ fn: "ungroup", tabIds: ids });
+        for (const id of ids) {
+          const current = tabs.get(id);
+          if (!current) {
+            continue;
+          }
+          const previous = current.tabGroupId;
+          current.tabGroupId = -1;
+          // Chrome deletes a group when its last tab leaves.
+          if (previous !== -1 && ![...tabs.values()].some((t) => t.tabGroupId === previous)) {
+            tabGroups.delete(previous);
+          }
+          for (const listener of tabListeners.updated) {
+            listener(id, { groupId: -1 }, { ...current });
+          }
+        }
+      },
       async create(createProperties) {
         const windowId = createProperties.windowId ?? 1;
         const window = windowMap.get(windowId) ?? {
@@ -208,6 +278,7 @@ async function loadServiceWorkerHarness({
           url: createProperties.url ?? "about:blank",
           title: createProperties.url === "chrome://extensions" ? "Extensions" : createProperties.url ?? "",
           active: Boolean(createProperties.active),
+          tabGroupId: -1,
           windowId,
           index: window.tabs.length
         };
@@ -243,7 +314,15 @@ async function loadServiceWorkerHarness({
       },
       onUpdated: {
         addListener(listener) {
-          tabListeners.updated.push(listener);
+          tabListeners.updated.push((tabId, changeInfo, tab) => {
+            // Real Chrome delivers the tab's current state; a page title
+            // change overrides any extension-set title, so mirror that.
+            const current = tabs.get(tabId);
+            if (current && tab && typeof tab === "object") {
+              Object.assign(current, tab);
+            }
+            listener(tabId, changeInfo, tab);
+          });
         }
       },
       onRemoved: {
@@ -267,7 +346,30 @@ async function loadServiceWorkerHarness({
           }));
       },
       async update() {}
-    }
+    },
+    tabGroups: tabGroupsApi
+      ? {
+          TAB_GROUP_ID_NONE: -1,
+          async query(queryInfo) {
+            return [...tabGroups.values()]
+              .filter(
+                (group) =>
+                  (!queryInfo?.title || group.title === queryInfo.title) &&
+                  (queryInfo?.windowId === undefined || group.windowId === queryInfo.windowId)
+              )
+              .map((group) => ({ ...group }));
+          },
+          async update(groupId, updateProperties) {
+            const group = tabGroups.get(groupId);
+            if (!group) {
+              throw new Error(`No such tab group: ${groupId}`);
+            }
+            Object.assign(group, updateProperties);
+            tabGroupCalls.push({ fn: "update", groupId, ...updateProperties });
+            return { ...group };
+          }
+        }
+      : undefined,
   };
   const storage = new Map();
   if (storedBridgeSettings !== undefined) {
@@ -327,12 +429,20 @@ async function loadServiceWorkerHarness({
     get tabs() {
       return new Map([...tabs.entries()].map(([id, value]) => [id, { ...value }]));
     },
+    seedTabGroup(groupId, { title, windowId = 1 }) {
+      tabGroups.set(groupId, { id: groupId, title, windowId });
+    },
     nativePort,
     postedMessages,
     storage,
     reloadCalls,
+    get runtimeReloadCalls() {
+      return runtimeReloadCalls;
+    },
+    tabGroupCalls,
     listeners: {
       runtime: runtimeListeners,
+      runtimeExternal: externalMessageListeners,
       self: selfListeners,
       debuggerEvent: debuggerEventListeners,
       debuggerDetach: debuggerDetachListeners,
@@ -1681,4 +1791,331 @@ test("service worker does not reload a spawned tab twice for the same disallowed
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   assert.deepEqual(harness.reloadCalls, [105]);
+});
+
+test("popup ungate-tab releases an extension-held spawned tab from the gate", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 130, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 131, url: "https://blocked.example/x", title: "Blocked", index: 1, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+  harness.state.sessions.set("root-session-130", {
+    tabId: 130,
+    targetId: harness.makePageTargetId(130),
+    root: true
+  });
+
+  harness.listeners.tabs.created[0]({ id: 131, openerTabId: 130, url: "about:blank" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(harness.state.rootAttachments.has(131), true);
+  assert.equal(harness.state.spawnedTabs.has(131), true);
+
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "ungate-tab", tabId: 131 }, null, resolve);
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.ungated, true);
+  assert.equal(harness.state.rootAttachments.has(131), false);
+  assert.equal(harness.state.spawnedTabs.has(131), false);
+  assert.equal(harness.state.lastError, null);
+  assert.equal(harness.state.attachLog[0]?.reason, "ungate");
+
+  // A later disallowed navigation must not re-gate the released tab.
+  harness.listeners.tabs.updated[0](
+    131,
+    { url: "https://blocked.example/y" },
+    { id: 131, url: "https://blocked.example/y", title: "" }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(harness.state.rootAttachments.has(131), false);
+  assert.deepEqual(harness.reloadCalls, []);
+});
+
+test("popup ungate-tab rejects tabs that are not gated", async () => {
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 140, url: "https://app.example", title: "App" },
+    storedTabAccessAllowlist: allowUrls("https://app.example")
+  });
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "ungate-tab", tabId: 140 }, null, resolve);
+  });
+  assert.equal(response.ok, false);
+  assert.match(response.error.message, /not gated/);
+});
+
+test("ungroupable gated tabs fall back to the gated favicon and ungate restores it", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tabGroupsApi: false,
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 150, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 151, url: "about:blank", title: "", index: 1, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async (debuggee, method, params) => {
+      sentCommands.push({ method, params });
+      return {};
+    }
+  });
+  // A syntax error in an injected script is silently swallowed by
+  // Runtime.evaluate; compile both scripts to catch that here.
+  new vm.Script(harness.GATED_FAVICON_INSTALL_SCRIPT);
+  new vm.Script(harness.GATED_FAVICON_RESTORE_SCRIPT);
+  harness.state.sessions.set("root-session-150", {
+    tabId: 150,
+    targetId: harness.makePageTargetId(150),
+    root: true
+  });
+
+  harness.listeners.tabs.created[0]({ id: 151, openerTabId: 150, url: "about:blank" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Registered for every future document of the gated tab...
+  const installs = sentCommands.filter(
+    ({ method, params }) =>
+      method === "Page.addScriptToEvaluateOnNewDocument" &&
+      typeof params?.source === "string" &&
+      params.source.includes("data-cdt-gated-icon")
+  );
+  assert.ok(installs.length >= 1, "install script registered for new documents");
+  // ...and injected into the current document.
+  const isInstallScript = (value) =>
+    typeof value === "string" && value.includes("data-cdt-gated-icon") && value.includes("MutationObserver");
+  const currentDocEvals = sentCommands.filter(
+    ({ method, params }) => method === "Runtime.evaluate" && isInstallScript(params?.expression)
+  );
+  assert.ok(currentDocEvals.length >= 1, "install script evaluated in current document");
+
+  // A document that commits after the attach (agent-created tab) must also
+  // get the install script.
+  const evalCountBefore = sentCommands.filter(
+    ({ method, params }) => method === "Runtime.evaluate" && isInstallScript(params?.expression)
+  ).length;
+  harness.listeners.tabs.updated[0](
+    151,
+    { url: "https://blocked.example/x" },
+    { id: 151, url: "https://blocked.example/x", title: "" }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const evalCountAfter = sentCommands.filter(
+    ({ method, params }) => method === "Runtime.evaluate" && isInstallScript(params?.expression)
+  ).length;
+  assert.ok(evalCountAfter > evalCountBefore, "install script re-evaluated on committed navigation");
+
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "ungate-tab", tabId: 151 }, null, resolve);
+  });
+  assert.equal(response.ok, true);
+  // Ungate restores the original icon while the debugger is still attached.
+  const restores = sentCommands.filter(
+    ({ method, params }) =>
+      method === "Runtime.evaluate" &&
+      typeof params?.expression === "string" &&
+      params.expression.includes("delete window.__cdtBridgeGatedIcon")
+  );
+  assert.ok(restores.length >= 1, "restore script evaluated on ungate");
+});
+
+test("concurrent ensureNativePort calls share one native port connection", async () => {
+  const harness = await loadServiceWorkerHarness();
+  const [first, second] = await Promise.all([
+    harness.ensureNativePort(),
+    harness.ensureNativePort()
+  ]);
+  assert.equal(first, second);
+  const hellos = harness.postedMessages.filter((message) => message.type === "hello");
+  assert.equal(hellos.length, 1);
+});
+
+test("gated tabs are grouped in the 'gated' group and leaving the group ungates them", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 160, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 161, url: "about:blank", title: "", index: 1, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+  harness.state.sessions.set("root-session-160", {
+    tabId: 160,
+    targetId: harness.makePageTargetId(160),
+    root: true
+  });
+
+  harness.listeners.tabs.created[0]({ id: 161, openerTabId: 160, url: "about:blank" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const groupCall = harness.tabGroupCalls.find(
+    (call) => call.fn === "group" && call.tabIds.includes(161)
+  );
+  assert.ok(groupCall, "gated group created with the spawned tab");
+  const groupId = groupCall.groupId;
+  const styleCall = harness.tabGroupCalls.find(
+    (call) => call.fn === "update" && call.groupId === groupId
+  );
+  assert.equal(styleCall?.title, "gated");
+  assert.equal(styleCall?.color, "red");
+
+  // The user drags the tab out of the group: Chrome fires tabs.onUpdated
+  // with the new groupId and the tab must be ungated automatically.
+  const draggedTab = { ...harness.tabs.get(161), tabGroupId: -1 };
+  for (const listener of harness.listeners.tabs.updated) {
+    listener(161, { groupId: -1 }, draggedTab);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(harness.state.rootAttachments.has(161), false);
+  assert.equal(harness.state.spawnedTabs.has(161), false);
+  assert.equal(harness.state.attachLog[0]?.reason, "ungate");
+});
+
+test("gating a tab in a user group moves it to the 'gated' group", async () => {
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 170, url: "https://app.example", title: "App", tabGroupId: 7 },
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+
+  const attached = await harness.handleNativeRequest({ action: "attach", payload: { targetId: "page:170" } });
+  // The debugger attaches lazily on the first command.
+  await harness.handleNativeRequest({
+    action: "sendCommand",
+    payload: { sessionId: attached.sessionId, method: "Page.enable", params: {} }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const groupCall = harness.tabGroupCalls.find(
+    (call) => call.fn === "group" && call.tabIds.includes(170)
+  );
+  assert.ok(groupCall, "tab moved from the user group to the gated group");
+  const styleCall = harness.tabGroupCalls.find(
+    (call) => call.fn === "update" && call.groupId === groupCall.groupId
+  );
+  assert.equal(styleCall?.title, "gated");
+});
+
+test("moving an ungated tab into the 'gated' group gates it", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 180, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 181, url: "about:blank", title: "", index: 1, active: false },
+          { id: 182, url: "https://app.example", title: "Other", index: 2, active: false }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+  harness.state.sessions.set("root-session-180", {
+    tabId: 180,
+    targetId: harness.makePageTargetId(180),
+    root: true
+  });
+
+  // Gate a spawned tab so the "gated" group exists.
+  harness.listeners.tabs.created[0]({ id: 181, openerTabId: 180, url: "about:blank" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const groupCall = harness.tabGroupCalls.find(
+    (call) => call.fn === "group" && call.tabIds.includes(181)
+  );
+  assert.ok(groupCall, "gated group created");
+
+  // The user drags the ungated tab into the group: it must be gated
+  // (extension-held, like a spawned tab).
+  const draggedTab = { ...harness.tabs.get(182), tabGroupId: groupCall.groupId };
+  for (const listener of harness.listeners.tabs.updated) {
+    listener(182, { groupId: groupCall.groupId }, draggedTab);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(harness.state.rootAttachments.has(182), true);
+  assert.equal(harness.state.rootAttachments.get(182).extensionHeld, true);
+  assert.equal(harness.state.attachLog[0]?.reason, "group-gate");
+  // The tab is on an allowlisted URL: no police reload.
+  assert.deepEqual(harness.reloadCalls, []);
+});
+
+test("service worker re-gates tabs in the 'gated' group after a restart", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [
+      {
+        id: 1,
+        focused: true,
+        type: "normal",
+        tabs: [
+          { id: 190, url: "https://app.example", title: "App", index: 0, active: true },
+          { id: 191, url: "https://blocked.example/x", title: "Blocked", index: 1, active: false, tabGroupId: 4242 }
+        ]
+      }
+    ],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+  // The group survived the restart; the debugger attachment did not.
+  harness.seedTabGroup(4242, { title: "gated", windowId: 1 });
+  await harness.restoreGatedGroupTabs();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(harness.state.rootAttachments.has(191), true);
+  assert.equal(harness.state.rootAttachments.get(191).extensionHeld, true);
+  assert.equal(harness.state.attachLog[0]?.reason, "group-restore");
+  assert.equal(harness.state.rootAttachments.has(190), false);
+  // The disallowed document is reloaded so the Fetch gate blocks it.
+  assert.deepEqual(harness.reloadCalls, [191]);
+});
+
+test("service worker reloads itself on its own development reload message", async () => {
+  const harness = await loadServiceWorkerHarness();
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtimeExternal[0](
+      { type: "cdt-bridge.dev-reload.v1" },
+      { id: "kbnaphbhjlbdmpekigjhfgogcimcpamf" },
+      resolve
+    );
+  });
+  assert.equal(response.ok, true);
+  assert.deepEqual(Object.keys(response), ["ok"]);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(harness.runtimeReloadCalls, 1);
+});
+
+test("service worker rejects development reload messages from other senders or types", async () => {
+  const harness = await loadServiceWorkerHarness();
+  const handler = harness.listeners.runtimeExternal[0];
+  const unauthorized = await new Promise((resolve) => {
+    handler(
+      { type: "cdt-bridge.dev-reload.v1" },
+      { id: "hacmcjjofinfaaahgdhopnnnipgjigge" },
+      resolve
+    );
+  });
+  assert.equal(unauthorized.ok, false);
+  handler({ type: "something-else" }, { id: "kbnaphbhjlbdmpekigjhfgogcimcpamf" }, () => {});
+  assert.equal(harness.runtimeReloadCalls, 0);
 });

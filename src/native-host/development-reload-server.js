@@ -4,6 +4,9 @@ import { readFile } from "node:fs/promises";
 
 const MAX_BODY_BYTES = 1024;
 const RELOAD_PATH = "/development/reload";
+// A previous host instance may still be exiting and holding the port.
+const RELOAD_BIND_ATTEMPTS = 6;
+const RELOAD_BIND_RETRY_DELAY_MS = 500;
 
 function isLoopbackAddress(address) {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
@@ -76,11 +79,13 @@ export async function loadDevelopmentReloadConfig(configPath) {
 }
 
 export class DevelopmentReloadServer {
-  constructor({ transport, config, logger = console }) {
+  constructor({ transport, config, logger = console, bindAttempts = RELOAD_BIND_ATTEMPTS, bindRetryDelayMs = RELOAD_BIND_RETRY_DELAY_MS } = {}) {
     this.transport = transport;
     this.config = config;
     this.logger = logger;
     this.server = null;
+    this.bindAttempts = bindAttempts;
+    this.bindRetryDelayMs = bindRetryDelayMs;
   }
 
   async start() {
@@ -88,17 +93,31 @@ export class DevelopmentReloadServer {
       return this;
     }
 
-    this.server = createServer((request, response) => {
-      void this.handleRequest(request, response);
-    });
-    await new Promise((resolve, reject) => {
-      this.server.once("error", reject);
-      this.server.listen(this.config.port, "127.0.0.1", () => {
-        this.server.off("error", reject);
-        resolve();
+    let lastError = null;
+    for (let attempt = 1; attempt <= this.bindAttempts; attempt += 1) {
+      const server = createServer((request, response) => {
+        void this.handleRequest(request, response);
       });
-    });
-    return this;
+      try {
+        await new Promise((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(this.config.port, "127.0.0.1", () => {
+            server.off("error", reject);
+            resolve();
+          });
+        });
+        this.server = server;
+        return this;
+      } catch (error) {
+        server.close();
+        if (error?.code !== "EADDRINUSE") {
+          throw error;
+        }
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, this.bindRetryDelayMs));
+      }
+    }
+    throw lastError;
   }
 
   async stop() {

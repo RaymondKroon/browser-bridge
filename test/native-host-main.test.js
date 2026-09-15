@@ -31,6 +31,8 @@ test("native host falls back to a free port when the preferred port is occupied"
   const bridge = await startBridgeServer({
     transport,
     preferredPort: occupiedPort,
+    portAttempts: 2,
+    portRetryDelayMs: 10,
     logger: {
       warn(message) {
         warnings.push(message);
@@ -50,6 +52,39 @@ test("native host falls back to a free port when the preferred port is occupied"
     await bridge.stop();
     occupiedServer.close();
     await once(occupiedServer, "close");
+  }
+});
+
+test("native host retries the preferred port while a previous instance is releasing it", async () => {
+  const occupiedServer = http.createServer((_req, res) => {
+    res.writeHead(200).end("occupied");
+  });
+  await listen(occupiedServer, 0);
+  const occupiedPort = occupiedServer.address().port;
+
+  // Release the port shortly after the first bind attempt fails, like a
+  // previous host instance finishing its shutdown.
+  setTimeout(() => occupiedServer.close(), 30);
+
+  const transport = new FakeExtensionTransport();
+  const warnings = [];
+  const bridge = await startBridgeServer({
+    transport,
+    preferredPort: occupiedPort,
+    portAttempts: 5,
+    portRetryDelayMs: 20,
+    logger: {
+      warn(message) {
+        warnings.push(message);
+      }
+    }
+  });
+
+  try {
+    assert.equal(bridge.port, occupiedPort);
+    assert.equal(warnings.length, 0);
+  } finally {
+    await bridge.stop();
   }
 });
 
