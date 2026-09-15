@@ -393,7 +393,10 @@ function compileAllowlistPattern(pattern) {
 
   // Patterns match the start of a URL; require a URL boundary so that
   // "https://nos.nl" does not match "https://nos.nlevil.com".
-  if (!pattern.endsWith("*")) {
+  // Skip the boundary when the pattern ends with "/" — the path separator
+  // already provides a natural boundary, and the assertion would incorrectly
+  // require the next char to also be a boundary (breaking prefix matches).
+  if (!pattern.endsWith("*") && !pattern.endsWith("/")) {
     regex += "(?=[/:?#]|$)";
   }
 
