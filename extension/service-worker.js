@@ -123,6 +123,7 @@ const state = {
   sessions: new Map(),
   spawnedTabs: new Map(),
   spawnedTabPolicedUrls: new Map(),
+  transientSpawnTabs: new Set(),
   expectedDetachTabs: new Set(),
   pendingInternalNavigations: new Map(),
   internalNavigationTabs: new Set()
@@ -510,6 +511,19 @@ function isAgentTab(tabId) {
 
 function trackSpawnedTab(tab) {
   if (typeof tab.id !== "number" || !isAgentTab(tab.openerTabId)) {
+    return;
+  }
+  // If the tab was created with a transient URL (about:blank, chrome://newtab),
+  // the user likely opened it manually via the + button while an agent tab
+  // was focused (Chrome sets openerTabId to the active tab). Remember this so
+  // we skip it on later onUpdated calls too. The agent cannot attach to
+  // disallowed URLs anyway (enforced by assertTabAccessForTab), so the Fetch
+  // gate adds no security here.
+  if (isTransientSpawnUrl(tab.url)) {
+    state.transientSpawnTabs.add(tab.id);
+    return;
+  }
+  if (state.transientSpawnTabs.has(tab.id)) {
     return;
   }
   // Idempotent: openerTabId may be absent at onCreated for cross-origin
