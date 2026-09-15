@@ -536,6 +536,71 @@ async function policeSpawnedTabUrl(tabId, url) {
   }
 }
 
+const BLOCKED_SUBRESOURCE_BANNER_ID = "cdt-bridge-blocked-subresources";
+
+// Self-contained, idempotent page script: keeps a per-document list of
+// subresources the Fetch gate blocked and renders/updates a fixed banner.
+// Runs in the page's main world via Runtime.evaluate (unaffected by CSP).
+function blockedSubresourceIndicatorScript(url, resourceType) {
+  return `(() => {
+    try {
+      const url = ${JSON.stringify(url)};
+      const resourceType = ${JSON.stringify(resourceType)};
+      if (!Array.isArray(window.__cdtBridgeBlockedSubresources)) {
+        window.__cdtBridgeBlockedSubresources = [];
+      }
+      const entries = window.__cdtBridgeBlockedSubresources;
+      let entry = entries.find((item) => item.url === url);
+      if (!entry) {
+        entry = { url, resourceType, count: 0 };
+        entries.push(entry);
+      }
+      entry.count += 1;
+      let banner = document.getElementById(${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)});
+      if (!banner) {
+        banner = document.createElement("div");
+        banner.id = ${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)};
+        banner.style.cssText = "position:fixed;bottom:12px;right:12px;z-index:2147483647;max-width:440px;max-height:40vh;overflow:auto;background:#7f1d1d;color:#fef2f2;border:1px solid:#fca5a5;border-radius:8px;padding:10px 12px;font:12px/1.5 system-ui,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.35);";
+        (document.body || document.documentElement).appendChild(banner);
+      }
+      banner.textContent = "";
+      const title = document.createElement("div");
+      title.style.fontWeight = "600";
+      title.textContent = "CDT Bridge blocked " + entries.length + " subresource" + (entries.length === 1 ? "" : "s") + " on this page:";
+      banner.appendChild(title);
+      const shown = entries.slice(-5);
+      for (const item of shown) {
+        const line = document.createElement("div");
+        line.textContent = item.resourceType + ": " + item.url + (item.count > 1 ? " (x" + item.count + ")" : "");
+        banner.appendChild(line);
+      }
+      if (entries.length > shown.length) {
+        const more = document.createElement("div");
+        more.textContent = "+ " + (entries.length - shown.length) + " more";
+        banner.appendChild(more);
+      }
+    } catch {}
+  })();`;
+}
+
+// Best-effort: show the user, right on the page, that the gate blocked
+// subresources. Document blocks are skipped: the page itself did not load,
+// so there is no live document to render into.
+async function notifyBlockedSubresourceInPage(tabId, url, resourceType) {
+  try {
+    await chrome.debugger.sendCommand(
+      { tabId },
+      "Runtime.evaluate",
+      {
+        expression: blockedSubresourceIndicatorScript(url, resourceType)
+      }
+    );
+  } catch {
+    // The page may be mid-navigation, crashed, or gone; the popup's
+    // blocked-requests log still records the block.
+  }
+}
+
 async function handleFetchRequestPaused(source, params) {
   const requestId = params?.requestId;
   const request = params?.request ?? {};
@@ -551,6 +616,9 @@ async function handleFetchRequestPaused(source, params) {
     // Record every blocked request (not just navigations) so the popup can
     // show the user what the gate blocked and let them allow it.
     void recordBlockedRequest({ url, resourceType, tabId: source.tabId });
+    if (resourceType !== "Document" && typeof url === "string") {
+      void notifyBlockedSubresourceInPage(source.tabId, url, resourceType);
+    }
   }
   if (!allowed && resourceType === "Document" && typeof url === "string") {
     // Only auto-add navigations; blocked subresources would spam the list.

@@ -35,7 +35,13 @@ Key invariants:
   Every blocked request (including subresources, which are not auto-added to
   the allowlist) is recorded in `blockedRequestsLog` (last 50 entries, deduped
   by URL) so the popup can show what was blocked and offer one-click origin
-  allowlisting.
+  allowlisting. When a *subresource* is blocked, the extension also injects
+  a visible banner into the affected page (idempotent `Runtime.evaluate` in
+  the main world, fixed bottom-right, lists up to the last 5 blocked URLs
+  with counts). The banner is a live indicator: the user sees it on screen
+  and the agent can read it from the DOM/AX tree. Blocked documents get no
+  banner (the page itself did not load); injection is best-effort and
+  silently skipped if the page context is unavailable.
 - Tab access is strict: attaching to, detaching, or sending any command to a
   tab whose current URL is not allowlisted is rejected — including
   `Page.navigate` to an allowlisted URL and inert domain-enable commands

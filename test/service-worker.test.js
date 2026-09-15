@@ -1299,6 +1299,55 @@ test("service worker gates network requests of attached tabs through the allowli
   );
 });
 
+test("service worker shows an in-page banner when subresources are blocked", async () => {
+  const sentCommands = [];
+  const harness = await loadServiceWorkerHarness({
+    tab: { id: 74, url: "https://app.example", title: "App" },
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async (debuggee, method, params) => {
+      sentCommands.push({ debuggee, method, params });
+      return {};
+    }
+  });
+  const sessionId = "root-session";
+  harness.state.sessions.set(sessionId, {
+    tabId: 74,
+    targetId: harness.makePageTargetId(74),
+    root: true
+  });
+  await harness.sendCommand({
+    method: "Runtime.evaluate",
+    params: { expression: "1" },
+    sessionId
+  });
+
+  const emitPaused = (source, params) =>
+    harness.listeners.debuggerEvent[0](source, "Fetch.requestPaused", params);
+  emitPaused({ tabId: 74 }, { requestId: "r1", resourceType: "Script", request: { url: "https://cdn.example/app.js" } });
+  // A blocked document has no live page to render a banner into.
+  emitPaused({ tabId: 74 }, { requestId: "r2", resourceType: "Document", request: { url: "https://other.example/page" } });
+  // Subresources blocked in an iframe session still banner on the top page.
+  emitPaused({ tabId: 74, sessionId: "iframe-session" }, { requestId: "r3", resourceType: "Image", request: { url: "https://ads.example/tracker.png" } });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const bannerCommands = sentCommands.filter(
+    ({ method, params }) =>
+      method === "Runtime.evaluate" &&
+      /cdt-bridge-blocked-subresources/.test(params?.expression ?? "")
+  );
+  assert.equal(bannerCommands.length, 2);
+  for (const { debuggee } of bannerCommands) {
+    // Targeted at the top page, never at the paused iframe session.
+    assert.deepEqual(plain(debuggee), { tabId: 74 });
+  }
+  const expressions = bannerCommands.map(({ params }) => params.expression);
+  assert.ok(expressions.some((expression) => /cdn\.example\/app\.js/.test(expression) && /Script/.test(expression)));
+  assert.ok(expressions.some((expression) => /ads\.example\/tracker\.png/.test(expression) && /Image/.test(expression)));
+  for (const expression of expressions) {
+    assert.doesNotMatch(expression, /other\.example\/page/);
+  }
+});
+
 test("service worker checks every redirect hop of a gated request", async () => {
   const sentCommands = [];
   const harness = await loadServiceWorkerHarness({
