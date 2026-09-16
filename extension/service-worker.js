@@ -600,29 +600,50 @@ function blockedSubresourceIndicatorScript(url, resourceType) {
         entries.push(entry);
       }
       entry.count += 1;
+      if (window.__cdtBridgeBannerCollapsed === undefined) {
+        window.__cdtBridgeBannerCollapsed = true; // start collapsed
+      }
+      const collapsed = window.__cdtBridgeBannerCollapsed;
       let banner = document.getElementById(${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)});
       if (!banner) {
         banner = document.createElement("div");
         banner.id = ${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)};
-        banner.style.cssText = "position:fixed;bottom:12px;right:12px;z-index:2147483647;max-width:440px;max-height:40vh;overflow:auto;background:#7f1d1d;color:#fef2f2;border:1px solid:#fca5a5;border-radius:8px;padding:10px 12px;font:12px/1.5 system-ui,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.35);";
+        banner.style.cssText = "position:fixed;bottom:12px;right:12px;z-index:2147483647;max-width:440px;background:#7f1d1d;color:#fef2f2;border:1px solid:#fca5a5;border-radius:8px;font:12px/1.5 system-ui,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.35);";
         (document.body || document.documentElement).appendChild(banner);
       }
       banner.textContent = "";
-      const title = document.createElement("div");
-      title.style.fontWeight = "600";
-      title.textContent = "CDT Bridge blocked " + entries.length + " subresource" + (entries.length === 1 ? "" : "s") + " on this page:";
-      banner.appendChild(title);
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;user-select:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;";
+      const toggle = document.createElement("span");
+      toggle.style.flex = "none";
+      toggle.textContent = collapsed ? "\u25B8" : "\u25BE";
+      const title = document.createElement("span");
+      title.textContent = "CDT Bridge blocked " + entries.length + " subresource" + (entries.length === 1 ? "" : "s") + " on this page";
+      header.appendChild(toggle);
+      header.appendChild(title);
+      header.addEventListener("click", () => {
+        window.__cdtBridgeBannerCollapsed = !window.__cdtBridgeBannerCollapsed;
+        const body = document.getElementById(${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)} + "-body");
+        if (body) body.style.display = window.__cdtBridgeBannerCollapsed ? "none" : "";
+        toggle.textContent = window.__cdtBridgeBannerCollapsed ? "\u25B8" : "\u25BE";
+      });
+      banner.appendChild(header);
+      const body = document.createElement("div");
+      body.id = ${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)} + "-body";
+      body.style.cssText = "max-height:40vh;overflow:auto;padding:0 10px 8px;";
+      body.style.display = collapsed ? "none" : "";
       const shown = entries.slice(-5);
       for (const item of shown) {
         const line = document.createElement("div");
         line.textContent = item.resourceType + ": " + item.url + (item.count > 1 ? " (x" + item.count + ")" : "");
-        banner.appendChild(line);
+        body.appendChild(line);
       }
       if (entries.length > shown.length) {
         const more = document.createElement("div");
         more.textContent = "+ " + (entries.length - shown.length) + " more";
-        banner.appendChild(more);
+        body.appendChild(more);
       }
+      banner.appendChild(body);
     } catch {}
   })();`;
 }
