@@ -6,6 +6,8 @@ let currentTabAccess = [];
 let currentBlockedRequests = [];
 const TAB_ACCESS_GROUP_COLLAPSE_KEY = "tabAccessGroupCollapse";
 let tabAccessGroupCollapse = {};
+const TAB_ACCESS_GROUP_NAMES_KEY = "tabAccessGroupNames";
+let tabAccessGroupNames = {};
 
 async function send(action, extra = {}) {
   return chrome.runtime.sendMessage({ action, ...extra });
@@ -94,9 +96,111 @@ function tabAccessGroupKey(url) {
   return "other";
 }
 
+function tabAccessGroupLabel(key) {
+  const custom = tabAccessGroupNames[key];
+  if (typeof custom === "string" && custom.length > 0) {
+    return custom;
+  }
+  return key === "other" ? "Other" : key;
+}
+
+function beginGroupRename(key, label) {
+  if (label.querySelector("input")) {
+    return;
+  }
+  label.replaceChildren();
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tab-access-group-rename";
+  input.spellcheck = false;
+  input.value = tabAccessGroupLabel(key);
+  label.append(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = (save) => {
+    if (done) {
+      return;
+    }
+    done = true;
+    if (save) {
+      const value = input.value.trim();
+      const defaultLabel = key === "other" ? "Other" : key;
+      if (value && value !== defaultLabel) {
+        tabAccessGroupNames[key] = value;
+      } else {
+        delete tabAccessGroupNames[key];
+      }
+      void chrome.storage.local.set({ [TAB_ACCESS_GROUP_NAMES_KEY]: tabAccessGroupNames });
+    }
+    updateTabAccess(currentTabAccess);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit(true);
+    } else if (event.key === "Escape") {
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", () => commit(true));
+}
+
+function buildNewTabAccessRow(groupKey) {
+  const row = document.createElement("div");
+  row.className = "tab-access-row tab-access-row-new";
+  const placeholder = document.createElement("span");
+  placeholder.className = "tab-access-drag-handle";
+  placeholder.textContent = "\u00A0";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.spellcheck = false;
+  input.placeholder = "https://\u2026";
+  let done = false;
+  const commit = (save) => {
+    if (done) {
+      return;
+    }
+    done = true;
+    const url = input.value.trim();
+    if (save && url && !currentTabAccess.some((entry) => entry.url === url)) {
+      const entry = { url, enabled: true };
+      if (groupKey !== tabAccessGroupKey(url)) {
+        entry.group = groupKey;
+      }
+      void persistTabAccess([...currentTabAccess, entry]);
+    } else {
+      row.remove();
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit(true);
+    } else if (event.key === "Escape") {
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", () => commit(true));
+  row.append(placeholder, input);
+  return row;
+}
+
 function buildTabAccessRow(entry, index) {
   const row = document.createElement("div");
   row.className = "tab-access-row";
+  const handle = document.createElement("span");
+  handle.className = "tab-access-drag-handle";
+  handle.textContent = "\u2807";
+  handle.draggable = true;
+  const moved = entry.group !== undefined && entry.group !== tabAccessGroupKey(entry.url);
+  handle.title = moved
+    ? `Pinned to ${entry.group} (derived: ${tabAccessGroupKey(entry.url)}). Drag to move to another group.`
+    : "Drag to move to another group";
+  handle.addEventListener("dragstart", (event) => {
+    event.dataTransfer.setData("text/plain", String(index));
+    event.dataTransfer.effectAllowed = "move";
+  });
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.checked = entry.enabled;
@@ -120,7 +224,7 @@ function buildTabAccessRow(entry, index) {
   deleteButton.className = "secondary small-button";
   deleteButton.textContent = "Delete";
   deleteButton.addEventListener("click", () => void persistTabAccess(currentTabAccess.filter((_, item) => item !== index)));
-  row.append(checkbox, input, deleteButton);
+  row.append(handle, checkbox, input, deleteButton);
   return row;
 }
 
@@ -138,7 +242,7 @@ function updateTabAccess(entries) {
 
   const groups = new Map();
   currentTabAccess.forEach((entry, index) => {
-    const key = tabAccessGroupKey(entry.url);
+    const key = entry.group ?? tabAccessGroupKey(entry.url);
     if (!groups.has(key)) {
       groups.set(key, []);
     }
@@ -173,7 +277,27 @@ function updateTabAccess(entries) {
 
       const label = document.createElement("span");
       label.className = "tab-access-group-label";
-      label.textContent = key === "other" ? "Other" : key;
+      label.textContent = tabAccessGroupLabel(key);
+      label.title = collapsed ? "Click to expand group" : "Click to collapse group";
+      label.addEventListener("click", () => {
+        if (label.querySelector("input")) {
+          return; // rename in progress
+        }
+        setCollapsed(tabAccessGroupCollapse[key] !== true);
+      });
+
+      const renameButton = document.createElement("button");
+      renameButton.type = "button";
+      renameButton.className = "tab-access-rename";
+      renameButton.textContent = "\u270E";
+      renameButton.title = "Rename group";
+      renameButton.addEventListener("click", () => beginGroupRename(key, label));
+
+      const addButton = document.createElement("button");
+      addButton.type = "button";
+      addButton.className = "tab-access-add";
+      addButton.textContent = "+";
+      addButton.title = `Add URL to ${tabAccessGroupLabel(key)}`;
 
       const collapseButton = document.createElement("button");
       collapseButton.type = "button";
@@ -186,16 +310,52 @@ function updateTabAccess(entries) {
       body.hidden = collapsed;
       members.forEach(({ entry, index }) => body.append(buildTabAccessRow(entry, index)));
 
-      collapseButton.addEventListener("click", () => {
-        const isCollapsed = tabAccessGroupCollapse[key] !== true;
+      const setCollapsed = (isCollapsed) => {
         tabAccessGroupCollapse[key] = isCollapsed;
         void chrome.storage.local.set({ [TAB_ACCESS_GROUP_COLLAPSE_KEY]: tabAccessGroupCollapse });
         body.hidden = isCollapsed;
         collapseButton.textContent = isCollapsed ? "+" : "\u2212";
         collapseButton.title = isCollapsed ? "Expand group" : "Collapse group";
+        label.title = isCollapsed ? "Click to expand group" : "Click to collapse group";
+      };
+      collapseButton.addEventListener("click", () => {
+        setCollapsed(tabAccessGroupCollapse[key] !== true);
+      });
+      addButton.addEventListener("click", () => {
+        if (body.hidden) {
+          setCollapsed(false);
+        }
+        const newRow = buildNewTabAccessRow(key);
+        body.append(newRow);
+        newRow.querySelector("input").focus();
       });
 
-      header.append(collapseButton, groupCheckbox, label);
+      group.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        group.classList.add("tab-access-group-dropping");
+      });
+      group.addEventListener("dragleave", () => {
+        group.classList.remove("tab-access-group-dropping");
+      });
+      group.addEventListener("drop", (event) => {
+        event.preventDefault();
+        group.classList.remove("tab-access-group-dropping");
+        const index = Number(event.dataTransfer.getData("text/plain"));
+        if (!Number.isInteger(index) || index < 0 || index >= currentTabAccess.length) {
+          return;
+        }
+        const derived = tabAccessGroupKey(currentTabAccess[index].url);
+        const target = key === derived ? undefined : key;
+        if ((currentTabAccess[index].group ?? undefined) === target) {
+          return;
+        }
+        const next = [...currentTabAccess];
+        next[index] = { ...next[index], group: target };
+        void persistTabAccess(next);
+      });
+
+      header.append(collapseButton, groupCheckbox, label, addButton, renameButton);
       group.append(header, body);
       list.append(group);
     });
@@ -429,8 +589,9 @@ document.getElementById("bridge-port").addEventListener("keydown", (event) => {
 });
 
 async function init() {
-  const stored = await chrome.storage.local.get(TAB_ACCESS_GROUP_COLLAPSE_KEY);
+  const stored = await chrome.storage.local.get([TAB_ACCESS_GROUP_COLLAPSE_KEY, TAB_ACCESS_GROUP_NAMES_KEY]);
   tabAccessGroupCollapse = stored[TAB_ACCESS_GROUP_COLLAPSE_KEY] ?? {};
+  tabAccessGroupNames = stored[TAB_ACCESS_GROUP_NAMES_KEY] ?? {};
   await refresh();
 }
 void init();

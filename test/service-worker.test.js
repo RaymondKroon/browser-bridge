@@ -1273,6 +1273,43 @@ test("service worker persists popup tab access allowlist updates", async () => {
   ]);
 });
 
+test("service worker preserves explicit group overrides on tab access entries", async () => {
+  const harness = await loadServiceWorkerHarness({
+    storedTabAccessAllowlist: [
+      { url: "https://cdn.example", enabled: true, group: "app.example" },
+      { url: "https://app.example", enabled: true, group: "   " },
+      "https://plain.example"
+    ]
+  });
+
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0](
+      {
+        action: "set-tab-access-allowlist",
+        entries: [
+          { url: "https://cdn.example", enabled: true, group: "app.example" },
+          { url: "https://app.example", enabled: true },
+          { url: "https://plain.example", enabled: false }
+        ]
+      },
+      null,
+      resolve
+    );
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(plain(response.tabAccessAllowlist), [
+    { url: "https://cdn.example", enabled: true, group: "app.example" },
+    { url: "https://app.example", enabled: true },
+    { url: "https://plain.example", enabled: false }
+  ]);
+  assert.deepEqual(plain(harness.storage.get("tabAccessAllowlist")), [
+    { url: "https://cdn.example", enabled: true, group: "app.example" },
+    { url: "https://app.example", enabled: true },
+    { url: "https://plain.example", enabled: false }
+  ]);
+});
+
 test("service worker marks non-allowlisted targets as blocked in target lists", async () => {
   const harness = await loadServiceWorkerHarness({
     windows: [

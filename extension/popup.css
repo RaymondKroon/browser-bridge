@@ -148,6 +148,44 @@ button.secondary {
   font-weight: 600;
   font-size: 12px;
   overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.tab-access-rename {
+  width: 20px;
+  min-width: 20px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  flex: none;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+}
+
+.tab-access-rename:hover,
+.tab-access-add:hover {
+  color: inherit;
+}
+
+.tab-access-add {
+  width: 20px;
+  min-width: 20px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  flex: none;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+}
+
+.tab-access-group-rename {
+  width: 100%;
+  font-weight: 600;
+  font-size: 12px;
 }
 
 .tab-access-group-body {
@@ -164,6 +202,24 @@ button.secondary {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+.tab-access-drag-handle {
+  flex: none;
+  padding: 0 2px;
+  color: #9ca3af;
+  cursor: grab;
+  user-select: none;
+}
+
+.tab-access-drag-handle:active {
+  cursor: grabbing;
+}
+
+.tab-access-group-dropping {
+  outline: 2px dashed #60a5fa;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .tab-access-row input[type="text"] {

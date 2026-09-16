@@ -334,6 +334,7 @@ function normalizeTabAccessAllowlist(value) {
   for (const item of value) {
     const url = typeof item === "string" ? item : item?.url;
     const enabled = typeof item === "string" ? true : item?.enabled === true;
+    const group = typeof item === "string" ? undefined : item?.group;
     if (typeof url !== "string") {
       throw createError(-32602, "Tab access allowlist entries must contain a url string");
     }
@@ -342,7 +343,11 @@ function normalizeTabAccessAllowlist(value) {
       continue;
     }
     seen.add(trimmed);
-    entries.push({ url: trimmed, enabled });
+    const entry = { url: trimmed, enabled };
+    if (typeof group === "string" && group.trim().length > 0) {
+      entry.group = group.trim();
+    }
+    entries.push(entry);
   }
   return entries;
 }
