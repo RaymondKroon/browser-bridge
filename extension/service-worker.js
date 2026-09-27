@@ -2014,7 +2014,7 @@ function waitForTabLoadComplete(tabId, timeoutMs = 30000) {
   });
 }
 
-async function discoverTabDependencyOrigins(url, groupKey) {
+async function discoverTabDependencyOrigins(url, groupKey, groupEntryUrls) {
   await loadSettings();
   if (typeof groupKey !== "string" || groupKey.trim().length === 0) {
     throw createError(-32602, "Dependency discovery requires a tab access group");
@@ -2049,9 +2049,15 @@ async function discoverTabDependencyOrigins(url, groupKey) {
     const loaded = waitForTabLoadComplete(tabId);
     await chrome.tabs.update(tabId, { url: pageUrl, active: true });
     await loaded;
-    const pageOrigin = new URL(pageUrl).origin;
+    const parsedPageUrl = new URL(pageUrl);
+    const pageOrigin = parsedPageUrl.origin;
+    parsedPageUrl.hash = "";
+    const pageRequestUrl = parsedPageUrl.href;
     let tabAccessAllowlist = state.tabAccessAllowlist;
     const group = groupKey.trim();
+    const knownGroupUrls = new Set(
+      Array.isArray(groupEntryUrls) ? groupEntryUrls.filter((entryUrl) => typeof entryUrl === "string") : []
+    );
     for (let pass = 0; pass < 3; pass += 1) {
       // Give delayed scripts and resource requests a short grace period after load.
       await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -2059,20 +2065,39 @@ async function discoverTabDependencyOrigins(url, groupKey) {
         .map((requestUrl) => {
           try {
             const parsed = new URL(requestUrl);
-            return parsed.protocol === "http:" || parsed.protocol === "https:"
-              ? (parsed.origin === pageOrigin ? null : parsed.origin)
-              : null;
+            if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+              return null;
+            }
+            if (parsed.origin !== pageOrigin) {
+              return parsed.origin;
+            }
+            parsed.hash = "";
+            return parsed.href === pageRequestUrl ? null : `${parsed.origin}${parsed.pathname}`;
           } catch {
             return null;
           }
         })
         .filter(Boolean))];
-      const existingInGroup = new Set(state.tabAccessAllowlist
-        .filter((entry) => entry.group === group)
-        .map((entry) => entry.url));
-      const additions = origins
-        .filter((origin) => !existingInGroup.has(origin))
-        .map((origin) => ({ url: origin, enabled: true, group }));
+      const groupEntries = state.tabAccessAllowlist.filter(
+        (entry) => entry.group === group || (entry.group === undefined && knownGroupUrls.has(entry.url))
+      );
+      const candidates = origins.sort((a, b) => a.length - b.length);
+      const additions = [];
+      for (const candidate of candidates) {
+        const explicitlyConfigured = groupEntries.some((entry) => entry.url === candidate);
+        if (explicitlyConfigured) {
+          continue;
+        }
+        const coveredByExisting = groupEntries.some(
+          (entry) => entry.enabled && matchesAllowlistPattern(entry.url, candidate)
+        );
+        const coveredByNewEntry = additions.some(
+          (entry) => matchesAllowlistPattern(entry.url, candidate)
+        );
+        if (!coveredByExisting && !coveredByNewEntry) {
+          additions.push({ url: candidate, enabled: true, group });
+        }
+      }
       if (additions.length === 0) {
         break;
       }
@@ -2090,9 +2115,14 @@ async function discoverTabDependencyOrigins(url, groupKey) {
       .map((requestUrl) => {
         try {
           const parsed = new URL(requestUrl);
-          return parsed.protocol === "http:" || parsed.protocol === "https:"
-            ? (parsed.origin === pageOrigin ? null : parsed.origin)
-            : null;
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            return null;
+          }
+          if (parsed.origin !== pageOrigin) {
+            return parsed.origin;
+          }
+          parsed.hash = "";
+          return parsed.href === pageRequestUrl ? null : `${parsed.origin}${parsed.pathname}`;
         } catch {
           return null;
         }
@@ -2473,7 +2503,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case "discover-tab-dependencies":
           sendResponse({
             ok: true,
-            ...await discoverTabDependencyOrigins(message.url, message.groupKey)
+            ...await discoverTabDependencyOrigins(message.url, message.groupKey, message.groupEntryUrls)
           });
           return;
         case "set-yolo-mode":

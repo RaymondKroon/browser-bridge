@@ -474,7 +474,11 @@ async function addGroupDependencyOrigins(groupKey, members, button) {
   button.textContent = "…";
   button.title = "Loading the first group URL and discovering its network dependencies";
   try {
-    const response = await send("discover-tab-dependencies", { url: firstUrl, groupKey });
+    const response = await send("discover-tab-dependencies", {
+      url: firstUrl,
+      groupKey,
+      groupEntryUrls: members.map(({ entry }) => entry.url)
+    });
     if (!response.ok) {
       throw new Error(response.error?.message ?? "Dependency discovery failed");
     }
