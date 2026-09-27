@@ -674,6 +674,38 @@ async function addTabAccessUrl() {
   input.value = "";
 }
 
+async function addActiveTabToNewGroup() {
+  const button = document.getElementById("add-active-tab-group-button");
+  button.disabled = true;
+  button.title = "Reading the active tab URL";
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const parsed = new URL(tab?.url ?? "");
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("The active tab must be an HTTP(S) page");
+    }
+    parsed.hash = "";
+    const url = parsed.href;
+    const groupKey = `active-tab:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const groupLabel = parsed.hostname || "Active tab";
+    tabAccessGroupNames = { ...tabAccessGroupNames, [groupKey]: groupLabel };
+    tabAccessGroupOrder = [...tabAccessGroupOrder, groupKey];
+    await chrome.storage.local.set({
+      [TAB_ACCESS_GROUP_NAMES_KEY]: tabAccessGroupNames,
+      [TAB_ACCESS_GROUP_ORDER_KEY]: tabAccessGroupOrder
+    });
+    await persistTabAccess([
+      ...currentTabAccess,
+      { url, enabled: true, group: groupKey }
+    ]);
+    button.title = `Added ${url} to a new ${groupLabel} group`;
+  } catch (error) {
+    button.title = error.message ?? "Could not add the active tab";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function savePort() {
   const button = document.getElementById("save-port-button");
   const port = document.getElementById("bridge-port").value;
@@ -704,6 +736,9 @@ document.getElementById("add-reload-id-button").addEventListener("click", () => 
 });
 document.getElementById("add-tab-access-button").addEventListener("click", () => {
   void addTabAccessUrl();
+});
+document.getElementById("add-active-tab-group-button").addEventListener("click", () => {
+  void addActiveTabToNewGroup();
 });
 document.getElementById("clear-blocked-requests-button").addEventListener("click", () => {
   void clearBlockedRequests();

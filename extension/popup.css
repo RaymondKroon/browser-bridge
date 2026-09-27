@@ -120,6 +120,11 @@ button.secondary {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+#add-active-tab-group-button {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
 .tab-access-list {
   display: grid;
   gap: 6px;

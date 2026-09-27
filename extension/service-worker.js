@@ -2049,6 +2049,7 @@ async function discoverTabDependencyOrigins(url, groupKey) {
     const loaded = waitForTabLoadComplete(tabId);
     await chrome.tabs.update(tabId, { url: pageUrl, active: true });
     await loaded;
+    const pageOrigin = new URL(pageUrl).origin;
     let tabAccessAllowlist = state.tabAccessAllowlist;
     const group = groupKey.trim();
     for (let pass = 0; pass < 3; pass += 1) {
@@ -2059,7 +2060,7 @@ async function discoverTabDependencyOrigins(url, groupKey) {
           try {
             const parsed = new URL(requestUrl);
             return parsed.protocol === "http:" || parsed.protocol === "https:"
-              ? parsed.origin
+              ? (parsed.origin === pageOrigin ? null : parsed.origin)
               : null;
           } catch {
             return null;
@@ -2090,7 +2091,7 @@ async function discoverTabDependencyOrigins(url, groupKey) {
         try {
           const parsed = new URL(requestUrl);
           return parsed.protocol === "http:" || parsed.protocol === "https:"
-            ? parsed.origin
+            ? (parsed.origin === pageOrigin ? null : parsed.origin)
             : null;
         } catch {
           return null;
