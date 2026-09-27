@@ -84,6 +84,7 @@ const DEFAULT_BRIDGE_SETTINGS = Object.freeze({
   port: DEFAULT_BRIDGE_PORT
 });
 const TAB_ACCESS_STORAGE_KEY = "tabAccessAllowlist";
+const YOLO_MODE_STORAGE_KEY = "yoloModeEnabled";
 const BLOCKED_REQUESTS_STORAGE_KEY = "blockedRequestsLog";
 const BLOCKED_REQUESTS_MAX_ENTRIES = 50;
 const CRASH_LOG_STORAGE_KEY = "crashLog";
@@ -101,6 +102,7 @@ const INTERNAL_PAGE_NOOP_METHODS = new Set([
 ]);
 const ACTION_COLORS = {
   connected: "#16a34a",
+  yolo: "#7c3aed",
   disconnected: "#6b7280",
   alert: "#dc2626",
   foreground: "#f9fafb"
@@ -116,6 +118,7 @@ const state = {
   lastError: null,
   settings: { ...DEFAULT_BRIDGE_SETTINGS },
   tabAccessAllowlist: [],
+  yoloModeEnabled: false,
   settingsLoaded: false,
   blockedRequests: [],
   attachLog: [],
@@ -197,6 +200,7 @@ async function loadSettings() {
     BRIDGE_SETTINGS_STORAGE_KEY,
     DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY,
     TAB_ACCESS_STORAGE_KEY,
+    YOLO_MODE_STORAGE_KEY,
     BLOCKED_REQUESTS_STORAGE_KEY,
     ATTACH_LOG_STORAGE_KEY
   ]);
@@ -207,6 +211,7 @@ async function loadSettings() {
     stored?.[DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY]
   );
   state.tabAccessAllowlist = normalizeTabAccessAllowlist(stored?.[TAB_ACCESS_STORAGE_KEY]);
+  state.yoloModeEnabled = stored?.[YOLO_MODE_STORAGE_KEY] === true;
   state.blockedRequests = normalizeBlockedRequests(stored?.[BLOCKED_REQUESTS_STORAGE_KEY]);
   state.attachLog = normalizeAttachLog(stored?.[ATTACH_LOG_STORAGE_KEY]);
   state.settingsLoaded = true;
@@ -425,6 +430,9 @@ function matchesAllowlistPattern(pattern, url) {
 function isTabUrlAllowed(url) {
   if (typeof url !== "string" || url.length === 0) {
     return false;
+  }
+  if (state.yoloModeEnabled && url !== "about:blank" && url !== "about:srcdoc") {
+    return true;
   }
   return state.tabAccessAllowlist.some(
     (entry) => entry.enabled && matchesAllowlistPattern(entry.url, url)
@@ -793,10 +801,12 @@ async function updateActionState() {
   const imageData = Object.fromEntries(
     ACTION_ICON_SIZES.map((size) => [size, drawActionIcon(size, connected)])
   );
-  const badgeText = connected ? "ON" : "OFF";
-  const badgeColor = connected ? ACTION_COLORS.connected : ACTION_COLORS.alert;
+  const badgeText = connected ? (state.yoloModeEnabled ? "Y" : "ON") : "OFF";
+  const badgeColor = connected
+    ? (state.yoloModeEnabled ? ACTION_COLORS.yolo : ACTION_COLORS.connected)
+    : ACTION_COLORS.alert;
   const title = connected
-    ? `CDT Bridge connected (${state.bridgeStatus?.httpBaseUrl ?? "local bridge"})`
+    ? `${state.yoloModeEnabled ? "YOLO mode enabled — all tabs allowed" : "CDT Bridge connected"} (${state.bridgeStatus?.httpBaseUrl ?? "local bridge"})`
     : "CDT Bridge disconnected";
 
   await Promise.all([
@@ -1227,7 +1237,14 @@ const GATED_FAVICON_RESTORE_SCRIPT = `(() => {
 })();`;
 
 const GATED_TAB_GROUP_TITLE = "gated";
+const YOLO_TAB_GROUP_TITLE = "YOLO";
 const GATED_TAB_GROUP_COLOR = "red";
+const YOLO_TAB_GROUP_COLOR = "purple";
+function activeManagedTabGroup() {
+  return state.yoloModeEnabled
+    ? { title: YOLO_TAB_GROUP_TITLE, color: YOLO_TAB_GROUP_COLOR }
+    : { title: GATED_TAB_GROUP_TITLE, color: GATED_TAB_GROUP_COLOR };
+}
 // The tabGroups API requires the "tabGroups" manifest permission; without it
 // (or in browser builds without the API) chrome.tabGroups is undefined and
 // the group indication/control is skipped — the favicon and gate still work.
@@ -1256,8 +1273,9 @@ async function addTabToGatedGroup(tabId) {
   gatedGroupMovesInFlight.add(tabId);
   try {
     const tab = await chrome.tabs.get(tabId);
+    const activeGroup = activeManagedTabGroup();
     const existing = await chrome.tabGroups.query({
-      title: GATED_TAB_GROUP_TITLE,
+      title: activeGroup.title,
       windowId: tab.windowId
     });
     if (existing.length > 0) {
@@ -1272,10 +1290,7 @@ async function addTabToGatedGroup(tabId) {
       tabIds: [tabId],
       createProperties: { windowId: tab.windowId }
     });
-    await chrome.tabGroups.update(groupId, {
-      title: GATED_TAB_GROUP_TITLE,
-      color: GATED_TAB_GROUP_COLOR
-    });
+    await chrome.tabGroups.update(groupId, activeGroup);
     return true;
   } catch {
     // Grouping is best-effort; the favicon still marks the tab.
@@ -1336,7 +1351,11 @@ async function restoreGatedGroupTabs() {
   }
   let groups = [];
   try {
-    groups = await chrome.tabGroups.query({ title: GATED_TAB_GROUP_TITLE });
+    const [gatedGroups, yoloGroups] = await Promise.all([
+      chrome.tabGroups.query({ title: GATED_TAB_GROUP_TITLE }),
+      chrome.tabGroups.query({ title: YOLO_TAB_GROUP_TITLE })
+    ]);
+    groups = [...gatedGroups, ...yoloGroups];
   } catch (error) {
     summary.error = String(error?.message ?? error);
     return summary;
@@ -1389,7 +1408,8 @@ async function handleGatedGroupMembership(tabId) {
     const group = (await chrome.tabGroups.query({})).find(
       (candidate) => candidate.id === groupId
     );
-    inGatedGroup = group?.title === GATED_TAB_GROUP_TITLE;
+    inGatedGroup =
+      group?.title === GATED_TAB_GROUP_TITLE || group?.title === YOLO_TAB_GROUP_TITLE;
   }
   const attachment = state.rootAttachments.get(tabId);
   if (inGatedGroup) {
@@ -1915,6 +1935,7 @@ async function getDiagnostics() {
     settings: state.settings,
     developmentReloadAllowedIds: state.developmentReloadAllowedIds,
     tabAccessAllowlist: state.tabAccessAllowlist,
+    yoloModeEnabled: state.yoloModeEnabled,
     blockedRequests: state.blockedRequests,
     attachLog: state.attachLog,
     crashLog: await loadCrashLog()
@@ -2312,6 +2333,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             ok: true,
             tabAccessAllowlist: await saveTabAccessAllowlist(message.entries)
           });
+          return;
+        case "set-yolo-mode":
+          state.yoloModeEnabled = message.enabled === true;
+          await chrome.storage.local.set({ [YOLO_MODE_STORAGE_KEY]: state.yoloModeEnabled });
+          await Promise.all(
+            [...state.rootAttachments.keys()].map((tabId) => addTabToGatedGroup(tabId))
+          );
+          refreshActionState();
+          sendResponse({ ok: true, yoloModeEnabled: state.yoloModeEnabled });
           return;
         case "ungate-tab": {
           const tabId = Number(message.tabId);

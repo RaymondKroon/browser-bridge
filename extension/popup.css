@@ -44,6 +44,25 @@ h2 {
   margin-bottom: 8px;
 }
 
+.yolo-toggle {
+  padding: 8px 0;
+}
+
+.yolo-toggle span {
+  display: grid;
+  gap: 4px;
+}
+
+.yolo-toggle small {
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.yolo-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
 .field-control {
   display: flex;
   gap: 8px;

@@ -496,6 +496,7 @@ async function refresh() {
   updatePortInput(response.settings ?? response.state.settings);
   updateAllowedIds(response.state.developmentReloadAllowedIds);
   updateTabAccess(response.state.tabAccessAllowlist);
+  document.getElementById("yolo-mode").checked = response.state.yoloModeEnabled === true;
   updateBlockedRequests(response.state.blockedRequests);
   updateConnectionButton(response.state);
 }
@@ -554,6 +555,14 @@ async function savePort() {
 }
 
 document.getElementById("connection-button").addEventListener("click", toggleConnection);
+document.getElementById("yolo-mode").addEventListener("change", async (event) => {
+  const response = await send("set-yolo-mode", { enabled: event.target.checked });
+  if (!response.ok) {
+    event.target.checked = !event.target.checked;
+    return;
+  }
+  await refresh();
+});
 document.getElementById("regenerate-reload-token-button").addEventListener("click", () => {
   void regenerateReloadToken();
 });
