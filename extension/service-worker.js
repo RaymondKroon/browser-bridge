@@ -1307,40 +1307,46 @@ function getTabGroupId(tab) {
 // together with its first tab; Chrome deletes it when the last tab
 // leaves). Best-effort throughout. Returns whether the tab is in the
 // "gated" group (the favicon fallback applies when it is not).
+let gatedGroupOperation = Promise.resolve();
 async function addTabToGatedGroup(tabId, { forceGated = false } = {}) {
   if (!hasTabGroupsApi) {
     return false;
   }
-  gatedGroupMovesInFlight.add(tabId);
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    const activeGroup = activeManagedTabGroup({ forceGated });
-    const existing = await chrome.tabGroups.query({
-      title: activeGroup.title,
-      windowId: tab.windowId
-    });
-    if (existing.length > 0) {
-      if (getTabGroupId(tab) !== existing[0].id) {
-        await chrome.tabs.group({ tabIds: [tabId], groupId: existing[0].id });
+  // Serialize lookup/create/move: concurrent tabs must not all observe a
+  // missing group and create one apiece (notably when leaving YOLO mode).
+  const operation = gatedGroupOperation.then(async () => {
+    gatedGroupMovesInFlight.add(tabId);
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const activeGroup = activeManagedTabGroup({ forceGated });
+      const existing = await chrome.tabGroups.query({
+        title: activeGroup.title,
+        windowId: tab.windowId
+      });
+      if (existing.length > 0) {
+        if (getTabGroupId(tab) !== existing[0].id) {
+          await chrome.tabs.group({ tabIds: [tabId], groupId: existing[0].id });
+        }
+        await syncTargetVisibility(tabId);
+        return true;
       }
+      // The API cannot create an empty group; create it with its first tab.
+      const groupId = await chrome.tabs.group({
+        tabIds: [tabId],
+        createProperties: { windowId: tab.windowId }
+      });
+      await chrome.tabGroups.update(groupId, activeGroup);
       await syncTargetVisibility(tabId);
       return true;
+    } catch {
+      // Grouping is best-effort; the favicon still marks the tab.
+      return false;
+    } finally {
+      gatedGroupMovesInFlight.delete(tabId);
     }
-    // No "gated" group in this window yet: create it together with the tab
-    // (the tabGroups API cannot create empty groups), then style it.
-    const groupId = await chrome.tabs.group({
-      tabIds: [tabId],
-      createProperties: { windowId: tab.windowId }
-    });
-    await chrome.tabGroups.update(groupId, activeGroup);
-    await syncTargetVisibility(tabId);
-    return true;
-  } catch {
-    // Grouping is best-effort; the favicon still marks the tab.
-    return false;
-  } finally {
-    gatedGroupMovesInFlight.delete(tabId);
-  }
+  });
+  gatedGroupOperation = operation.catch(() => {});
+  return operation;
 }
 
 async function removeTabFromGatedGroup(tabId) {
@@ -1417,6 +1423,9 @@ async function restoreGatedGroupTabs() {
       }
       summary.tabs += 1;
       try {
+        if (!state.yoloModeEnabled && group.title === YOLO_TAB_GROUP_TITLE) {
+          await addTabToGatedGroup(tab.id, { forceGated: true });
+        }
         const attachment = await ensureDebuggerAttached(tab.id, "group-restore");
         attachment.extensionHeld = true;
         await policeGatedTabUrl(tab.id, tab.url);
@@ -2579,15 +2588,43 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ ok: true, tabId: tab.id });
           return;
         }
-        case "set-yolo-mode":
+        case "set-yolo-mode": {
+          const wasEnabled = state.yoloModeEnabled;
           state.yoloModeEnabled = message.enabled === true;
           await chrome.storage.local.set({ [YOLO_MODE_STORAGE_KEY]: state.yoloModeEnabled });
-          await Promise.all(
-            [...state.rootAttachments.keys()].map((tabId) => addTabToGatedGroup(tabId))
-          );
+          let attachedTabIds = [...state.rootAttachments.keys()];
+          if (wasEnabled && !state.yoloModeEnabled && hasTabGroupsApi) {
+            const yoloGroups = await chrome.tabGroups.query({ title: YOLO_TAB_GROUP_TITLE });
+            const groupedTabs = await Promise.all(yoloGroups.map((group) =>
+              chrome.tabs.query({ groupId: group.id }).catch(() => [])
+            ));
+            attachedTabIds = [...new Set([
+              ...attachedTabIds,
+              ...groupedTabs.flat().map((tab) => tab.id).filter((tabId) => typeof tabId === "number")
+            ])];
+          }
+          await Promise.all(attachedTabIds.map(async (tabId) => {
+            if (wasEnabled && !state.yoloModeEnabled && !state.rootAttachments.has(tabId)) {
+              const attachment = await ensureDebuggerAttached(tabId, "group-gate");
+              attachment.extensionHeld = true;
+            }
+            await addTabToGatedGroup(tabId);
+          }));
+          if (wasEnabled && !state.yoloModeEnabled) {
+            // YOLO tabs may have loaded pages outside the allowlist. Once the
+            // unrestricted mode is off, force a fresh intercepted load for
+            // any such page before allowing further access.
+            await Promise.all(attachedTabIds.map(async (tabId) => {
+              const tab = await chrome.tabs.get(tabId).catch(() => null);
+              if (tab) {
+                await policeGatedTabUrl(tabId, tab.url);
+              }
+            }));
+          }
           refreshActionState();
           sendResponse({ ok: true, yoloModeEnabled: state.yoloModeEnabled });
           return;
+        }
         case "ungate-tab": {
           const tabId = Number(message.tabId);
           if (!Number.isInteger(tabId) || tabId < 0) {

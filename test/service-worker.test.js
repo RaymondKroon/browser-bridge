@@ -2017,6 +2017,44 @@ test("concurrent ensureNativePort calls share one native port connection", async
   assert.equal(hellos.length, 1);
 });
 
+test("turning YOLO off creates one gated group and reapplies the allowlist", async () => {
+  const harness = await loadServiceWorkerHarness({
+    windows: [{
+      id: 1,
+      focused: true,
+      type: "normal",
+      tabs: [
+        { id: 150, url: "https://blocked.example/a", title: "Blocked A", index: 0, active: true, tabGroupId: 500 },
+        { id: 151, url: "https://app.example", title: "Allowed", index: 1, active: false, tabGroupId: 500 },
+        { id: 152, url: "https://blocked.example/b", title: "Blocked B", index: 2, active: false, tabGroupId: 500 }
+      ]
+    }],
+    storedTabAccessAllowlist: allowUrls("https://app.example"),
+    debuggerSendCommand: async () => ({})
+  });
+  harness.seedTabGroup(500, { title: "YOLO", windowId: 1 });
+  harness.state.yoloModeEnabled = true;
+  for (const tabId of [150, 151, 152]) {
+    harness.state.rootAttachments.set(tabId, { tabId, extensionHeld: true });
+  }
+
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0]({ action: "set-yolo-mode", enabled: false }, null, resolve);
+  });
+
+  assert.equal(response.ok, true);
+  const created = harness.tabGroupCalls.filter((call) => call.fn === "group" && call.created);
+  assert.equal(created.length, 1, "all tabs reuse a single new gated group");
+  const gatedGroup = harness.tabGroupCalls.find(
+    (call) => call.fn === "update" && call.title === "gated"
+  );
+  assert.ok(gatedGroup);
+  assert.deepEqual(harness.reloadCalls.sort(), [150, 152]);
+  for (const tab of harness.tabs.values()) {
+    assert.notEqual(tab.tabGroupId, 500, "no tab remains in the YOLO group");
+  }
+});
+
 test("gated tabs are grouped in the 'gated' group and leaving the group ungates them", async () => {
   const harness = await loadServiceWorkerHarness({
     windows: [
