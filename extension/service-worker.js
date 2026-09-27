@@ -2014,7 +2014,7 @@ function waitForTabLoadComplete(tabId, timeoutMs = 30000) {
   });
 }
 
-async function discoverTabDependencyOrigins(url, groupKey, groupEntryUrls) {
+async function discoverTabDependencyOrigins(url, groupKey, groupEntryUrls, currentTabId) {
   await loadSettings();
   if (typeof groupKey !== "string" || groupKey.trim().length === 0) {
     throw createError(-32602, "Dependency discovery requires a tab access group");
@@ -2035,21 +2035,52 @@ async function discoverTabDependencyOrigins(url, groupKey, groupEntryUrls) {
     });
   }
 
-  let tabId = null;
+  const requests = new Set();
+  let currentTab = null;
+  let currentTabMatches = false;
+  if (Number.isInteger(currentTabId)) {
+    currentTab = await chrome.tabs.get(currentTabId).catch(() => null);
+    currentTabMatches = Boolean(
+      currentTab?.url && matchesAllowlistPattern(pageUrl, currentTab.url)
+    );
+    if (currentTabMatches) {
+      for (const blockedRequest of state.blockedRequests) {
+        if (blockedRequest.tabId === currentTabId) {
+          requests.add(blockedRequest.url);
+        }
+      }
+    }
+  }
+
+  let tabId = currentTabMatches ? currentTabId : null;
   try {
-    const tab = await chrome.tabs.create({ url: "about:blank", active: true });
-    tabId = tab.id;
-    const requests = new Set();
-    state.dependencyDiscoveryTabs.set(tabId, requests);
-    const attachment = await ensureDebuggerAttached(tabId, "dependency-discovery", {
-      markGated: true,
-      forceGated: true
-    });
-    attachment.extensionHeld = true;
-    const loaded = waitForTabLoadComplete(tabId);
-    await chrome.tabs.update(tabId, { url: pageUrl, active: true });
-    await loaded;
-    const parsedPageUrl = new URL(pageUrl);
+    if (currentTabMatches) {
+      state.dependencyDiscoveryTabs.set(tabId, requests);
+      const attachment = await ensureDebuggerAttached(tabId, "dependency-discovery-current-tab", {
+        markGated: true,
+        forceGated: true
+      });
+      attachment.extensionHeld = true;
+      await addTabToGatedGroup(tabId, { forceGated: true });
+      const loaded = waitForTabLoadComplete(tabId);
+      await chrome.tabs.reload(tabId, { bypassCache: true });
+      await loaded;
+    } else {
+      const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+      tabId = tab.id;
+      state.dependencyDiscoveryTabs.set(tabId, requests);
+      const attachment = await ensureDebuggerAttached(tabId, "dependency-discovery", {
+        markGated: true,
+        forceGated: true
+      });
+      attachment.extensionHeld = true;
+      const loaded = waitForTabLoadComplete(tabId);
+      await chrome.tabs.update(tabId, { url: pageUrl, active: true });
+      await loaded;
+    }
+
+    const discoveryPageUrl = currentTabMatches ? currentTab.url : pageUrl;
+    const parsedPageUrl = new URL(discoveryPageUrl);
     const pageOrigin = parsedPageUrl.origin;
     parsedPageUrl.hash = "";
     const pageRequestUrl = parsedPageUrl.href;
@@ -2058,9 +2089,12 @@ async function discoverTabDependencyOrigins(url, groupKey, groupEntryUrls) {
     const knownGroupUrls = new Set(
       Array.isArray(groupEntryUrls) ? groupEntryUrls.filter((entryUrl) => typeof entryUrl === "string") : []
     );
-    for (let pass = 0; pass < 3; pass += 1) {
-      // Give delayed scripts and resource requests a short grace period after load.
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+    const passCount = 3;
+    for (let pass = 0; pass < passCount; pass += 1) {
+      if (!currentTabMatches) {
+        // Give delayed scripts and resource requests a short grace period after load.
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
       const origins = [...new Set([...requests]
         .map((requestUrl) => {
           try {
@@ -2105,7 +2139,7 @@ async function discoverTabDependencyOrigins(url, groupKey, groupEntryUrls) {
         ...state.tabAccessAllowlist,
         ...additions
       ]);
-      if (pass < 2) {
+      if (pass + 1 < passCount) {
         const reloaded = waitForTabLoadComplete(tabId);
         await chrome.tabs.reload(tabId, { bypassCache: true });
         await reloaded;
@@ -2503,7 +2537,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case "discover-tab-dependencies":
           sendResponse({
             ok: true,
-            ...await discoverTabDependencyOrigins(message.url, message.groupKey, message.groupEntryUrls)
+            ...await discoverTabDependencyOrigins(
+              message.url,
+              message.groupKey,
+              message.groupEntryUrls,
+              message.currentTabId
+            )
           });
           return;
         case "set-yolo-mode":

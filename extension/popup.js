@@ -474,10 +474,12 @@ async function addGroupDependencyOrigins(groupKey, members, button) {
   button.textContent = "…";
   button.title = "Loading the first group URL and discovering its network dependencies";
   try {
+    const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     const response = await send("discover-tab-dependencies", {
       url: firstUrl,
       groupKey,
-      groupEntryUrls: members.map(({ entry }) => entry.url)
+      groupEntryUrls: members.map(({ entry }) => entry.url),
+      currentTabId: currentTab?.id
     });
     if (!response.ok) {
       throw new Error(response.error?.message ?? "Dependency discovery failed");
