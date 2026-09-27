@@ -124,10 +124,10 @@ const state = {
   attachLog: [],
   rootAttachments: new Map(),
   sessions: new Map(),
+  exposedTargets: new Set(),
   spawnedTabs: new Map(),
   dependencyDiscoveryTabs: new Map(),
   spawnedTabPolicedUrls: new Map(),
-  transientSpawnTabs: new Set(),
   expectedDetachTabs: new Set(),
   pendingInternalNavigations: new Map(),
   internalNavigationTabs: new Set()
@@ -529,19 +529,9 @@ function trackSpawnedTab(tab) {
   if (typeof tab.id !== "number" || !isAgentTab(tab.openerTabId)) {
     return;
   }
-  // If the tab was created with a transient URL (about:blank, chrome://newtab),
-  // the user likely opened it manually via the + button while an agent tab
-  // was focused (Chrome sets openerTabId to the active tab). Remember this so
-  // we skip it on later onUpdated calls too. The agent cannot attach to
-  // disallowed URLs anyway (enforced by assertTabAccessForTab), so the Fetch
-  // gate adds no security here.
-  if (isTransientSpawnUrl(tab.url)) {
-    state.transientSpawnTabs.add(tab.id);
-    return;
-  }
-  if (state.transientSpawnTabs.has(tab.id)) {
-    return;
-  }
+  // Gate even transient about:blank tabs spawned by an agent-controlled tab:
+  // a later navigation can commit before the opener relationship is visible
+  // to CDP clients, so attach now and police the committed URL in onUpdated.
   // Idempotent: openerTabId may be absent at onCreated for cross-origin
   // window.open and only appear on a later onUpdated, so this is called
   // from both. Skip tabs already tracked to avoid redundant attaches.
@@ -979,19 +969,55 @@ async function stopHost({ clearLastError = true } = {}) {
   return { connected: false, stopped: true };
 }
 
+async function managedTabGroupIds() {
+  if (!chrome.tabGroups?.query) {
+    return new Set();
+  }
+  const groups = await chrome.tabGroups.query({});
+  return new Set(
+    groups
+      .filter((group) => group.title === GATED_TAB_GROUP_TITLE || group.title === YOLO_TAB_GROUP_TITLE)
+      .map((group) => group.id)
+  );
+}
+
+function isManagedTab(tab, groupIds) {
+  const groupId = tab?.groupId ?? tab?.tabGroupId ?? chrome.tabGroups?.TAB_GROUP_ID_NONE ?? -1;
+  return groupIds.has(groupId);
+}
+
+async function syncTargetVisibility(tabId, tab = null) {
+  const currentTab = tab ?? await chrome.tabs.get(tabId).catch(() => null);
+  const groupIds = await managedTabGroupIds();
+  const isVisible = currentTab && isManagedTab(currentTab, groupIds);
+  if (isVisible) {
+    const targetInfo = buildTargetInfo({ ...currentTab, id: tabId });
+    const wasVisible = state.exposedTargets.has(tabId);
+    state.exposedTargets.add(tabId);
+    emitTargetLifecycle(wasVisible ? "targetInfoChanged" : "targetCreated", targetInfo);
+  } else if (state.exposedTargets.delete(tabId)) {
+    emitTargetLifecycle("targetDestroyed", makePageTargetId(tabId));
+  }
+}
+
 async function listTargets() {
-  const windows = await chrome.windows.getAll({
-    populate: true,
-    windowTypes: ["normal"]
-  });
-  return windows
+  const [windows, groupIds] = await Promise.all([
+    chrome.windows.getAll({
+      populate: true,
+      windowTypes: ["normal"]
+    }),
+    managedTabGroupIds()
+  ]);
+  const targets = windows
     .sort(compareWindowsForDiscovery)
     .flatMap((window) =>
       (window.tabs ?? [])
-        .filter((tab) => typeof tab.id === "number")
+        .filter((tab) => typeof tab.id === "number" && isManagedTab(tab, groupIds))
         .sort(compareTabsForDiscovery)
         .map((tab) => buildTargetInfo(tab))
     );
+  state.exposedTargets = new Set(targets.map((target) => target.tabId));
+  return targets;
 }
 
 function buildTargetInfo(tab) {
@@ -1297,6 +1323,7 @@ async function addTabToGatedGroup(tabId, { forceGated = false } = {}) {
       if (getTabGroupId(tab) !== existing[0].id) {
         await chrome.tabs.group({ tabIds: [tabId], groupId: existing[0].id });
       }
+      await syncTargetVisibility(tabId);
       return true;
     }
     // No "gated" group in this window yet: create it together with the tab
@@ -1306,6 +1333,7 @@ async function addTabToGatedGroup(tabId, { forceGated = false } = {}) {
       createProperties: { windowId: tab.windowId }
     });
     await chrome.tabGroups.update(groupId, activeGroup);
+    await syncTargetVisibility(tabId);
     return true;
   } catch {
     // Grouping is best-effort; the favicon still marks the tab.
@@ -1873,26 +1901,19 @@ async function createTarget(url) {
     throw createError(-32603, "Browser did not return a tab id");
   }
 
-  // The tab starts loading before the Fetch gate can attach, and the Fetch
-  // domain never intercepts requests served from the HTTP cache. Without
-  // this, the agent's own initial load would fetch subresources ungated
-  // and keep serving them from cache on every later load. Gate the tab
-  // immediately and force one reloaded, fully-gated pass. bypassCache is
-  // required: a normal reload would be served from the cache the ungated
-  // initial load just populated, and cache hits are invisible to Fetch.
-  void (async () => {
-    try {
-      const attachment = await ensureDebuggerAttached(tab.id, "agent-created");
-      attachment.extensionHeld = true;
-      const current = await chrome.tabs.get(tab.id);
-      if (isTransientSpawnUrl(current.url ?? "")) {
-        return;
-      }
+  // Attach and group before returning the target so discovery only exposes it
+  // after the Fetch gate has been installed. Reload bypasses cache: cached
+  // subresources are invisible to Fetch and could otherwise bypass the gate.
+  try {
+    const attachment = await ensureDebuggerAttached(tab.id, "agent-created");
+    attachment.extensionHeld = true;
+    const current = await chrome.tabs.get(tab.id);
+    if (!isTransientSpawnUrl(current.url ?? "")) {
       await chrome.tabs.reload(tab.id, { bypassCache: true });
-    } catch {
-      // The tab may be gone or refuse the debugger; nothing to gate.
     }
-  })();
+  } catch {
+    // The tab may be gone or refuse the debugger; nothing to gate.
+  }
 
   return { targetId: makePageTargetId(tab.id), tabId: tab.id };
 }
@@ -2366,19 +2387,13 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
 chrome.tabs.onCreated.addListener((tab) => {
   if (typeof tab.id === "number") {
-    emitTargetLifecycle("targetCreated", buildTargetInfo(tab));
+    void syncTargetVisibility(tab.id, tab).catch(() => {});
   }
   trackSpawnedTab(tab);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  emitTargetLifecycle(
-    "targetInfoChanged",
-    buildTargetInfo({
-      ...tab,
-      id: tabId
-    })
-  );
+  void syncTargetVisibility(tabId, { ...tab, id: tabId }).catch(() => {});
 
   // openerTabId can be populated after onCreated (notably for cross-origin
   // window.open), so (re)check spawn tracking before policing the URL.
@@ -2426,7 +2441,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   clearPendingInternalNavigation(tabId);
   state.spawnedTabs.delete(tabId);
   state.spawnedTabPolicedUrls.delete(tabId);
-  emitTargetLifecycle("targetDestroyed", makePageTargetId(tabId));
+  if (state.exposedTargets.delete(tabId)) {
+    emitTargetLifecycle("targetDestroyed", makePageTargetId(tabId));
+  }
 });
 
 // Group membership is the gate state in both directions: a gated tab that

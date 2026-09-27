@@ -432,6 +432,11 @@ async function loadServiceWorkerHarness({
     seedTabGroup(groupId, { title, windowId = 1 }) {
       tabGroups.set(groupId, { id: groupId, title, windowId });
     },
+    putTabInGroup(tabId, groupId) {
+      const tab = tabs.get(tabId);
+      assert.ok(tab, `No such tab: ${tabId}`);
+      tab.tabGroupId = groupId;
+    },
     nativePort,
     postedMessages,
     storage,
@@ -892,6 +897,14 @@ test("service worker lists tabs in focused-window order and skips non-normal win
     ]
   });
 
+  harness.seedTabGroup(900, { title: "gated", windowId: 1 });
+  harness.seedTabGroup(902, { title: "gated", windowId: 3 });
+  for (const tabId of [11, 12]) {
+    harness.putTabInGroup(tabId, 900);
+  }
+  for (const tabId of [31, 32]) {
+    harness.putTabInGroup(tabId, 902);
+  }
   const targets = await new Promise((resolve) => {
     harness.listeners.runtime[0]({ action: "refresh-targets" }, null, (response) => resolve(response.targets));
   });
@@ -1329,7 +1342,7 @@ test("service worker preserves explicit group overrides on tab access entries", 
   ]);
 });
 
-test("service worker marks non-allowlisted targets as blocked in target lists", async () => {
+test("service worker only returns gated tabs and marks inaccessible gated targets as blocked", async () => {
   const harness = await loadServiceWorkerHarness({
     windows: [
       {
@@ -1338,13 +1351,17 @@ test("service worker marks non-allowlisted targets as blocked in target lists", 
         type: "normal",
         tabs: [
           { id: 51, url: "https://allowed.example", title: "Allowed", index: 0, active: true },
-          { id: 52, url: "https://blocked.example", title: "Blocked", index: 1, active: false }
+          { id: 52, url: "https://blocked.example", title: "Blocked", index: 1, active: false },
+          { id: 53, url: "https://ungated.example", title: "Ungated", index: 2, active: false }
         ]
       }
     ],
     storedTabAccessAllowlist: allowUrls("https://allowed.example")
   });
 
+  harness.seedTabGroup(901, { title: "gated", windowId: 1 });
+  harness.putTabInGroup(51, 901);
+  harness.putTabInGroup(52, 901);
   const targets = await new Promise((resolve) => {
     harness.listeners.runtime[0]({ action: "refresh-targets" }, null, (response) =>
       resolve(response.targets)
