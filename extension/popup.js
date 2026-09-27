@@ -209,10 +209,30 @@ function buildTabAccessRow(entry, index) {
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.checked = entry.enabled;
-  checkbox.title = entry.enabled ? "Allowed" : "Blocked (toggle to allow)";
+  checkbox.title = entry.enabled
+    ? (entry.effect === "deny" ? "Exception active (blocks matching URLs)" : "Allowed")
+    : "Rule disabled";
   checkbox.addEventListener("change", () => {
     const next = [...currentTabAccess];
     next[index] = { ...next[index], enabled: checkbox.checked };
+    void persistTabAccess(next);
+  });
+  const effectButton = document.createElement("button");
+  effectButton.type = "button";
+  effectButton.className = `tab-access-effect small-button ${entry.effect === "deny" ? "tab-access-effect-block" : "tab-access-effect-allow"}`;
+  effectButton.textContent = entry.effect === "deny" ? "Block" : "Allow";
+  effectButton.title = entry.effect === "deny"
+    ? "This rule is an exception that blocks matching URLs; click to allow instead"
+    : "This rule allows matching URLs; click to make it a blocking exception";
+  effectButton.addEventListener("click", () => {
+    const next = [...currentTabAccess];
+    const updated = { ...next[index] };
+    if (updated.effect === "deny") {
+      delete updated.effect;
+    } else {
+      updated.effect = "deny";
+    }
+    next[index] = updated;
     void persistTabAccess(next);
   });
   const input = document.createElement("input");
@@ -248,7 +268,7 @@ function buildTabAccessRow(entry, index) {
   deleteButton.className = "secondary small-button";
   deleteButton.textContent = "Delete";
   deleteButton.addEventListener("click", () => void persistTabAccess(currentTabAccess.filter((_, item) => item !== index)));
-  row.append(handle, checkbox, input, deleteButton);
+  row.append(handle, checkbox, effectButton, input, deleteButton);
   return row;
 }
 

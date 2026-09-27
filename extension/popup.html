@@ -32,7 +32,7 @@
         <button id="add-active-tab-yolo-button" type="button" class="secondary" hidden>Add active tab to YOLO group</button>
         <section class="field stack" aria-label="Tab access allowlist">
           <span>Tab access (URL prefix allowlist)</span>
-          <span class="tab-access-hint">Prefixes match everything below them. * in a domain matches subdomains (https://*.example.com). Drag group or entry handles to reorder. Add a URL to multiple groups to manage dependencies separately; access is allowed if any copy is enabled. “Deps” reloads the active tab when its URL matches the first entry prefix, capturing blocked requests; otherwise it opens that entry in a visible gated tab. It adds uncovered external origins and same-origin paths.</span>
+          <span class="tab-access-hint">Prefixes match everything below them. * in a domain matches subdomains (https://*.example.com). Use an entry’s Allow/Block button to make a blocking exception; an active Block rule overrides matching allows. Drag group or entry handles to reorder. Add a URL to multiple groups to manage dependencies separately; access is allowed if any matching allow is enabled and no matching Block rule is enabled. “Deps” reloads the active tab when its URL matches the first entry prefix, capturing blocked requests; otherwise it opens that entry in a visible gated tab. It adds uncovered external origins and same-origin paths.</span>
           <div id="tab-access-list" class="tab-access-list"></div>
           <button id="add-active-tab-group-button" type="button" class="secondary">Add active tab URL to new group</button>
           <div class="add-tab-access-row">

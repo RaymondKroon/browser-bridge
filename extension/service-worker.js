@@ -341,17 +341,21 @@ function normalizeTabAccessAllowlist(value) {
     const url = typeof item === "string" ? item : item?.url;
     const enabled = typeof item === "string" ? true : item?.enabled === true;
     const group = typeof item === "string" ? undefined : item?.group;
+    const effect = typeof item === "string" ? "allow" : item?.effect === "deny" ? "deny" : "allow";
     if (typeof url !== "string") {
       throw createError(-32602, "Tab access allowlist entries must contain a url string");
     }
     const trimmed = url.trim();
     const normalizedGroup = typeof group === "string" ? group.trim() : "";
-    const entryKey = `${trimmed}\u0000${normalizedGroup}`;
+    const entryKey = `${trimmed}\u0000${normalizedGroup}\u0000${effect}`;
     if (trimmed.length === 0 || seen.has(entryKey)) {
       continue;
     }
     seen.add(entryKey);
     const entry = { url: trimmed, enabled };
+    if (effect === "deny") {
+      entry.effect = "deny";
+    }
     if (normalizedGroup.length > 0) {
       entry.group = normalizedGroup;
     }
@@ -437,8 +441,13 @@ function isTabUrlAllowed(url) {
   if (state.yoloModeEnabled && url !== "about:blank" && url !== "about:srcdoc") {
     return true;
   }
+  if (state.tabAccessAllowlist.some(
+    (entry) => entry.enabled && entry.effect === "deny" && matchesAllowlistPattern(entry.url, url)
+  )) {
+    return false;
+  }
   return state.tabAccessAllowlist.some(
-    (entry) => entry.enabled && matchesAllowlistPattern(entry.url, url)
+    (entry) => entry.enabled && entry.effect !== "deny" && matchesAllowlistPattern(entry.url, url)
   );
 }
 

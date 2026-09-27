@@ -330,6 +330,22 @@ button.secondary {
   font-size: 12px;
 }
 
+.tab-access-effect-allow {
+  background: #15803d;
+}
+
+.tab-access-effect-allow:hover {
+  background: #166534;
+}
+
+.tab-access-effect-block {
+  background: #b91c1c;
+}
+
+.tab-access-effect-block:hover {
+  background: #991b1b;
+}
+
 textarea {
   box-sizing: border-box;
   width: 100%;

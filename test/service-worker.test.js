@@ -1409,6 +1409,28 @@ test("service worker treats domain wildcards as whole-label subdomain matches", 
   );
 });
 
+test("service worker lets enabled blocking exceptions override wildcard allows", async () => {
+  const harness = await loadServiceWorkerHarness({
+    storedTabAccessAllowlist: [
+      { url: "https://*.google.com", enabled: true },
+      { url: "https://mail.google.com", enabled: true, effect: "deny" }
+    ]
+  });
+
+  const searchTarget = await harness.handleNativeRequest({
+    action: "createTarget",
+    payload: { url: "https://www.google.com/search?q=hello" }
+  });
+  assert.equal(typeof searchTarget.tabId, "number");
+  await assert.rejects(
+    harness.handleNativeRequest({
+      action: "createTarget",
+      payload: { url: "https://mail.google.com/mail/u/0/" }
+    }),
+    /Tab access blocked/
+  );
+});
+
 test("service worker does not match plain prefixes against lookalike hosts", async () => {
   const harness = await loadServiceWorkerHarness({
     storedTabAccessAllowlist: allowUrls("https://nos.nl")
