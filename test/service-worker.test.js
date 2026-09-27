@@ -1273,6 +1273,25 @@ test("service worker persists popup tab access allowlist updates", async () => {
   ]);
 });
 
+test("service worker preserves the same URL in separate tab access groups", async () => {
+  const harness = await loadServiceWorkerHarness();
+  const entries = [
+    { url: "https://cdn.example", enabled: false, group: "site-a" },
+    { url: "https://cdn.example", enabled: true, group: "site-b" }
+  ];
+  const response = await new Promise((resolve) => {
+    harness.listeners.runtime[0](
+      { action: "set-tab-access-allowlist", entries },
+      null,
+      resolve
+    );
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(plain(response.tabAccessAllowlist), entries);
+  assert.deepEqual(plain(harness.storage.get("tabAccessAllowlist")), entries);
+});
+
 test("service worker preserves explicit group overrides on tab access entries", async () => {
   const harness = await loadServiceWorkerHarness({
     storedTabAccessAllowlist: [

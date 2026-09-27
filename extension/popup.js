@@ -8,6 +8,10 @@ const TAB_ACCESS_GROUP_COLLAPSE_KEY = "tabAccessGroupCollapse";
 let tabAccessGroupCollapse = {};
 const TAB_ACCESS_GROUP_NAMES_KEY = "tabAccessGroupNames";
 let tabAccessGroupNames = {};
+const TAB_ACCESS_GROUP_ORDER_KEY = "tabAccessGroupOrder";
+let tabAccessGroupOrder = [];
+const TAB_ACCESS_ENTRY_DRAG_TYPE = "application/x-cdt-tab-access-entry";
+const TAB_ACCESS_GROUP_DRAG_TYPE = "application/x-cdt-tab-access-group";
 
 async function send(action, extra = {}) {
   return chrome.runtime.sendMessage({ action, ...extra });
@@ -163,7 +167,7 @@ function buildNewTabAccessRow(groupKey) {
     }
     done = true;
     const url = input.value.trim();
-    if (save && url && !currentTabAccess.some((entry) => entry.url === url)) {
+    if (save && url) {
       const entry = { url, enabled: true };
       if (groupKey !== tabAccessGroupKey(url)) {
         entry.group = groupKey;
@@ -199,6 +203,7 @@ function buildTabAccessRow(entry, index) {
     : "Drag to move to another group";
   handle.addEventListener("dragstart", (event) => {
     event.dataTransfer.setData("text/plain", String(index));
+    event.dataTransfer.setData(TAB_ACCESS_ENTRY_DRAG_TYPE, String(index));
     event.dataTransfer.effectAllowed = "move";
   });
   const checkbox = document.createElement("input");
@@ -218,6 +223,25 @@ function buildTabAccessRow(entry, index) {
     const next = [...currentTabAccess];
     next[index] = { ...next[index], url: input.value.trim() };
     void persistTabAccess(next);
+  });
+  row.addEventListener("dragover", (event) => {
+    if (!event.dataTransfer.types.includes(TAB_ACCESS_ENTRY_DRAG_TYPE)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    row.classList.add("tab-access-row-dropping");
+  });
+  row.addEventListener("dragleave", () => row.classList.remove("tab-access-row-dropping"));
+  row.addEventListener("drop", (event) => {
+    if (!event.dataTransfer.types.includes(TAB_ACCESS_ENTRY_DRAG_TYPE)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    row.classList.remove("tab-access-row-dropping");
+    const sourceIndex = Number(event.dataTransfer.getData(TAB_ACCESS_ENTRY_DRAG_TYPE));
+    reorderTabAccessEntries(sourceIndex, index);
   });
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
@@ -249,8 +273,18 @@ function updateTabAccess(entries) {
     groups.get(key).push({ entry, index });
   });
 
+  const compareGroupKeys = (a, b) => {
+    const aIndex = tabAccessGroupOrder.indexOf(a);
+    const bIndex = tabAccessGroupOrder.indexOf(b);
+    if (aIndex !== -1 || bIndex !== -1) {
+      if (aIndex === -1) return 1;
+      if (bIndex === -1) return -1;
+      if (aIndex !== bIndex) return aIndex - bIndex;
+    }
+    return a.localeCompare(b);
+  };
   [...groups.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
+    .sort((a, b) => compareGroupKeys(a[0], b[0]))
     .forEach(([key, members]) => {
       const collapsed = tabAccessGroupCollapse[key] === true;
       const group = document.createElement("div");
@@ -258,6 +292,15 @@ function updateTabAccess(entries) {
 
       const header = document.createElement("div");
       header.className = "tab-access-group-header";
+      const groupDragHandle = document.createElement("span");
+      groupDragHandle.className = "tab-access-group-drag-handle";
+      groupDragHandle.textContent = "\u2807";
+      groupDragHandle.draggable = true;
+      groupDragHandle.title = "Drag to reorder groups";
+      groupDragHandle.addEventListener("dragstart", (event) => {
+        event.dataTransfer.setData(TAB_ACCESS_GROUP_DRAG_TYPE, key);
+        event.dataTransfer.effectAllowed = "move";
+      });
 
       const groupCheckbox = document.createElement("input");
       groupCheckbox.type = "checkbox";
@@ -298,6 +341,15 @@ function updateTabAccess(entries) {
       addButton.className = "tab-access-add";
       addButton.textContent = "+";
       addButton.title = `Add URL to ${tabAccessGroupLabel(key)}`;
+
+      const dependenciesButton = document.createElement("button");
+      dependenciesButton.type = "button";
+      dependenciesButton.className = "tab-access-dependencies";
+      dependenciesButton.textContent = "Deps";
+      dependenciesButton.title = `Add all dependencies of ${members[0]?.entry.url ?? "the first entry"}`;
+      dependenciesButton.addEventListener("click", () => {
+        void addGroupDependencyOrigins(key, members, dependenciesButton);
+      });
 
       const collapseButton = document.createElement("button");
       collapseButton.type = "button";
@@ -341,6 +393,11 @@ function updateTabAccess(entries) {
       group.addEventListener("drop", (event) => {
         event.preventDefault();
         group.classList.remove("tab-access-group-dropping");
+        const draggedGroupKey = event.dataTransfer.getData(TAB_ACCESS_GROUP_DRAG_TYPE);
+        if (draggedGroupKey) {
+          reorderTabAccessGroups(draggedGroupKey, key, compareGroupKeys);
+          return;
+        }
         const index = Number(event.dataTransfer.getData("text/plain"));
         if (!Number.isInteger(index) || index < 0 || index >= currentTabAccess.length) {
           return;
@@ -355,10 +412,86 @@ function updateTabAccess(entries) {
         void persistTabAccess(next);
       });
 
-      header.append(collapseButton, groupCheckbox, label, addButton, renameButton);
+      header.append(groupDragHandle, collapseButton, groupCheckbox, label, dependenciesButton, addButton, renameButton);
       group.append(header, body);
       list.append(group);
     });
+}
+
+function reorderTabAccessEntries(sourceIndex, targetIndex) {
+  if (
+    !Number.isInteger(sourceIndex) ||
+    !Number.isInteger(targetIndex) ||
+    sourceIndex < 0 ||
+    targetIndex < 0 ||
+    sourceIndex >= currentTabAccess.length ||
+    targetIndex >= currentTabAccess.length
+  ) {
+    return;
+  }
+  const groupKey = currentTabAccess[targetIndex].group ?? tabAccessGroupKey(currentTabAccess[targetIndex].url);
+  const indices = currentTabAccess
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => (entry.group ?? tabAccessGroupKey(entry.url)) === groupKey)
+    .map(({ index }) => index);
+  const sourcePosition = indices.indexOf(sourceIndex);
+  const targetPosition = indices.indexOf(targetIndex);
+  if (sourcePosition === -1 || targetPosition === -1 || sourcePosition === targetPosition) {
+    return;
+  }
+  const reordered = indices.map((index) => currentTabAccess[index]);
+  reordered.splice(targetPosition, 0, reordered.splice(sourcePosition, 1)[0]);
+  const next = [...currentTabAccess];
+  indices.forEach((index, position) => {
+    next[index] = reordered[position];
+  });
+  void persistTabAccess(next);
+}
+
+function reorderTabAccessGroups(sourceKey, targetKey, compareGroupKeys) {
+  if (sourceKey === targetKey) {
+    return;
+  }
+  const keys = [...new Set(currentTabAccess.map((entry) => entry.group ?? tabAccessGroupKey(entry.url)))];
+  keys.sort(compareGroupKeys);
+  const sourceIndex = keys.indexOf(sourceKey);
+  const targetIndex = keys.indexOf(targetKey);
+  if (sourceIndex === -1 || targetIndex === -1) {
+    return;
+  }
+  keys.splice(targetIndex, 0, keys.splice(sourceIndex, 1)[0]);
+  tabAccessGroupOrder = keys;
+  void chrome.storage.local.set({ [TAB_ACCESS_GROUP_ORDER_KEY]: tabAccessGroupOrder });
+  updateTabAccess(currentTabAccess);
+}
+
+async function addGroupDependencyOrigins(groupKey, members, button) {
+  const firstUrl = members[0]?.entry.url;
+  if (!firstUrl) {
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "…";
+  button.title = "Loading the first group URL and discovering its network dependencies";
+  try {
+    const response = await send("discover-tab-dependencies", { url: firstUrl, groupKey });
+    if (!response.ok) {
+      throw new Error(response.error?.message ?? "Dependency discovery failed");
+    }
+    const oldUrls = new Set(currentTabAccess.map((entry) => entry.url));
+    const additions = (response.origins ?? []).filter((origin) => !oldUrls.has(origin));
+    if (Array.isArray(response.tabAccessAllowlist)) {
+      updateTabAccess(response.tabAccessAllowlist);
+    }
+    button.title = additions.length > 0
+      ? `Added ${additions.length} dependency origin(s)`
+      : "No new HTTP(S) dependency origins found";
+  } catch (error) {
+    button.title = error.message ?? "Dependency discovery failed";
+  } finally {
+    button.textContent = "Deps";
+    button.disabled = false;
+  }
 }
 
 function blockedRequestOrigin(url) {
@@ -438,7 +571,7 @@ function updateBlockedRequests(entries) {
 
 async function allowBlockedRequest(url, scope) {
   const target = scope === "origin" ? blockedRequestOrigin(url) : blockedRequestPrefix(url);
-  if (!currentTabAccess.some((entry) => entry.url === target)) {
+  if (!currentTabAccess.some((entry) => entry.url === target && entry.enabled)) {
     await persistTabAccess([...currentTabAccess, { url: target, enabled: true }]);
   }
   const response = await send("dismiss-blocked-request", { url });
@@ -534,7 +667,7 @@ async function addAllowedId() {
 async function addTabAccessUrl() {
   const input = document.getElementById("new-tab-access-url");
   const url = input.value.trim();
-  if (!url || currentTabAccess.some((entry) => entry.url === url)) {
+  if (!url) {
     return;
   }
   await persistTabAccess([...currentTabAccess, { url, enabled: true }]);
@@ -598,9 +731,16 @@ document.getElementById("bridge-port").addEventListener("keydown", (event) => {
 });
 
 async function init() {
-  const stored = await chrome.storage.local.get([TAB_ACCESS_GROUP_COLLAPSE_KEY, TAB_ACCESS_GROUP_NAMES_KEY]);
+  const stored = await chrome.storage.local.get([
+    TAB_ACCESS_GROUP_COLLAPSE_KEY,
+    TAB_ACCESS_GROUP_NAMES_KEY,
+    TAB_ACCESS_GROUP_ORDER_KEY
+  ]);
   tabAccessGroupCollapse = stored[TAB_ACCESS_GROUP_COLLAPSE_KEY] ?? {};
   tabAccessGroupNames = stored[TAB_ACCESS_GROUP_NAMES_KEY] ?? {};
+  tabAccessGroupOrder = Array.isArray(stored[TAB_ACCESS_GROUP_ORDER_KEY])
+    ? stored[TAB_ACCESS_GROUP_ORDER_KEY]
+    : [];
   await refresh();
 }
 void init();

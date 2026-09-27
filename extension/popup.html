@@ -31,7 +31,7 @@
         </label>
         <section class="field stack" aria-label="Tab access allowlist">
           <span>Tab access (URL prefix allowlist)</span>
-          <span class="tab-access-hint">Prefixes match everything below them. * in a domain matches subdomains (https://*.example.com).</span>
+          <span class="tab-access-hint">Prefixes match everything below them. * in a domain matches subdomains (https://*.example.com). Drag group or entry handles to reorder. Add a URL to multiple groups to manage dependencies separately; access is allowed if any copy is enabled. “Deps” opens the first entry in a visible tab, discovers its HTTP(S) request origins, adds them to the group, and keeps the tab in the gated group.</span>
           <div id="tab-access-list" class="tab-access-list"></div>
           <div class="add-tab-access-row">
             <input id="new-tab-access-url" type="text" spellcheck="false" placeholder="https://example.com or https://*.example.com">

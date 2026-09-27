@@ -125,6 +125,7 @@ const state = {
   rootAttachments: new Map(),
   sessions: new Map(),
   spawnedTabs: new Map(),
+  dependencyDiscoveryTabs: new Map(),
   spawnedTabPolicedUrls: new Map(),
   transientSpawnTabs: new Set(),
   expectedDetachTabs: new Set(),
@@ -344,13 +345,15 @@ function normalizeTabAccessAllowlist(value) {
       throw createError(-32602, "Tab access allowlist entries must contain a url string");
     }
     const trimmed = url.trim();
-    if (trimmed.length === 0 || seen.has(trimmed)) {
+    const normalizedGroup = typeof group === "string" ? group.trim() : "";
+    const entryKey = `${trimmed}\u0000${normalizedGroup}`;
+    if (trimmed.length === 0 || seen.has(entryKey)) {
       continue;
     }
-    seen.add(trimmed);
+    seen.add(entryKey);
     const entry = { url: trimmed, enabled };
-    if (typeof group === "string" && group.trim().length > 0) {
-      entry.group = group.trim();
+    if (normalizedGroup.length > 0) {
+      entry.group = normalizedGroup;
     }
     entries.push(entry);
   }
@@ -685,6 +688,10 @@ async function handleFetchRequestPaused(source, params) {
   const url = request.url;
   // Fetch.requestPaused carries resourceType as a top-level param.
   const resourceType = params?.resourceType ?? request.resourceType ?? "other";
+  const discoveryRequests = state.dependencyDiscoveryTabs.get(source.tabId);
+  if (discoveryRequests && typeof url === "string") {
+    discoveryRequests.add(url);
+  }
 
   const allowed =
     typeof url === "string" &&
@@ -693,7 +700,9 @@ async function handleFetchRequestPaused(source, params) {
     console.warn(`[cdt-bridge] fetch-gate: blocking ${resourceType} ${url} (tab ${source.tabId})`);
     // Record every blocked request (not just navigations) so the popup can
     // show the user what the gate blocked and let them allow it.
-    void recordBlockedRequest({ url, resourceType, tabId: source.tabId });
+    if (!discoveryRequests) {
+      void recordBlockedRequest({ url, resourceType, tabId: source.tabId });
+    }
     if (resourceType !== "Document" && typeof url === "string") {
       void notifyBlockedSubresourceInPage(source.tabId, url, resourceType);
     }
@@ -1022,7 +1031,11 @@ const attachmentPromises = new Map();
 // ignore those events or it would ungate the tab right after gating it.
 const gatedGroupMovesInFlight = new Set();
 
-async function ensureDebuggerAttached(tabId, reason = "unknown") {
+async function ensureDebuggerAttached(
+  tabId,
+  reason = "unknown",
+  { markGated = true, forceGated = false } = {}
+) {
   if (state.rootAttachments.has(tabId)) {
     return state.rootAttachments.get(tabId);
   }
@@ -1077,20 +1090,22 @@ async function ensureDebuggerAttached(tabId, reason = "unknown") {
       // Fetch gating is best-effort; the command-level checks still apply.
     }
 
-    // Mark the tab in the tab strip: the red "gated" group is the primary
-    // indication; the gated favicon is the fallback for tabs that cannot be
-    // grouped (pinned tabs and special pages).
-    const grouped = await addTabToGatedGroup(tabId);
-    if (!grouped) {
-      attachment.usesGatedFavicon = true;
-      try {
-        await chrome.debugger.sendCommand({ tabId }, "Page.addScriptToEvaluateOnNewDocument", {
-          source: GATED_FAVICON_INSTALL_SCRIPT
-        });
-      } catch {
-        // Best-effort; the current-document injection below still applies.
+    if (markGated) {
+      // Mark the tab in the tab strip: the red "gated" group is the primary
+      // indication; the gated favicon is the fallback for tabs that cannot be
+      // grouped (pinned tabs and special pages).
+      const grouped = await addTabToGatedGroup(tabId, { forceGated });
+      if (!grouped) {
+        attachment.usesGatedFavicon = true;
+        try {
+          await chrome.debugger.sendCommand({ tabId }, "Page.addScriptToEvaluateOnNewDocument", {
+            source: GATED_FAVICON_INSTALL_SCRIPT
+          });
+        } catch {
+          // Best-effort; the current-document injection below still applies.
+        }
+        void installGatedFavicon(tabId);
       }
-      void installGatedFavicon(tabId);
     }
 
     return attachment;
@@ -1240,8 +1255,8 @@ const GATED_TAB_GROUP_TITLE = "gated";
 const YOLO_TAB_GROUP_TITLE = "YOLO";
 const GATED_TAB_GROUP_COLOR = "red";
 const YOLO_TAB_GROUP_COLOR = "purple";
-function activeManagedTabGroup() {
-  return state.yoloModeEnabled
+function activeManagedTabGroup({ forceGated = false } = {}) {
+  return !forceGated && state.yoloModeEnabled
     ? { title: YOLO_TAB_GROUP_TITLE, color: YOLO_TAB_GROUP_COLOR }
     : { title: GATED_TAB_GROUP_TITLE, color: GATED_TAB_GROUP_COLOR };
 }
@@ -1266,14 +1281,14 @@ function getTabGroupId(tab) {
 // together with its first tab; Chrome deletes it when the last tab
 // leaves). Best-effort throughout. Returns whether the tab is in the
 // "gated" group (the favicon fallback applies when it is not).
-async function addTabToGatedGroup(tabId) {
+async function addTabToGatedGroup(tabId, { forceGated = false } = {}) {
   if (!hasTabGroupsApi) {
     return false;
   }
   gatedGroupMovesInFlight.add(tabId);
   try {
     const tab = await chrome.tabs.get(tabId);
-    const activeGroup = activeManagedTabGroup();
+    const activeGroup = activeManagedTabGroup({ forceGated });
     const existing = await chrome.tabGroups.query({
       title: activeGroup.title,
       windowId: tab.windowId
@@ -1970,6 +1985,126 @@ async function reloadDevelopmentExtension(payload) {
   return { ok: true };
 }
 
+function waitForTabLoadComplete(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+    };
+    const onUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        cleanup();
+        resolve();
+      }
+    };
+    const onRemoved = (removedTabId) => {
+      if (removedTabId === tabId) {
+        cleanup();
+        reject(createError(-32000, "Dependency discovery tab was closed"));
+      }
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      reject(createError(-32000, "Timed out loading the group entry for dependency discovery"));
+    }, timeoutMs);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+  });
+}
+
+async function discoverTabDependencyOrigins(url, groupKey) {
+  await loadSettings();
+  if (typeof groupKey !== "string" || groupKey.trim().length === 0) {
+    throw createError(-32602, "Dependency discovery requires a tab access group");
+  }
+  let pageUrl;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("Only HTTP(S) URLs can be used for dependency discovery");
+    }
+    pageUrl = parsed.href;
+  } catch (error) {
+    throw createError(-32602, error?.message ?? "Invalid dependency discovery URL");
+  }
+  if (!isTabUrlAllowed(pageUrl)) {
+    throw createError(TAB_ACCESS_BLOCKED_CODE, "Enable the group entry URL before discovering its dependencies", {
+      url: pageUrl
+    });
+  }
+
+  let tabId = null;
+  try {
+    const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+    tabId = tab.id;
+    const requests = new Set();
+    state.dependencyDiscoveryTabs.set(tabId, requests);
+    const attachment = await ensureDebuggerAttached(tabId, "dependency-discovery", {
+      markGated: true,
+      forceGated: true
+    });
+    attachment.extensionHeld = true;
+    const loaded = waitForTabLoadComplete(tabId);
+    await chrome.tabs.update(tabId, { url: pageUrl, active: true });
+    await loaded;
+    let tabAccessAllowlist = state.tabAccessAllowlist;
+    const group = groupKey.trim();
+    for (let pass = 0; pass < 3; pass += 1) {
+      // Give delayed scripts and resource requests a short grace period after load.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const origins = [...new Set([...requests]
+        .map((requestUrl) => {
+          try {
+            const parsed = new URL(requestUrl);
+            return parsed.protocol === "http:" || parsed.protocol === "https:"
+              ? parsed.origin
+              : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean))];
+      const existingInGroup = new Set(state.tabAccessAllowlist
+        .filter((entry) => entry.group === group)
+        .map((entry) => entry.url));
+      const additions = origins
+        .filter((origin) => !existingInGroup.has(origin))
+        .map((origin) => ({ url: origin, enabled: true, group }));
+      if (additions.length === 0) {
+        break;
+      }
+      tabAccessAllowlist = await saveTabAccessAllowlist([
+        ...state.tabAccessAllowlist,
+        ...additions
+      ]);
+      if (pass < 2) {
+        const reloaded = waitForTabLoadComplete(tabId);
+        await chrome.tabs.reload(tabId, { bypassCache: true });
+        await reloaded;
+      }
+    }
+    const origins = [...new Set([...requests]
+      .map((requestUrl) => {
+        try {
+          const parsed = new URL(requestUrl);
+          return parsed.protocol === "http:" || parsed.protocol === "https:"
+            ? parsed.origin
+            : null;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean))];
+    return { origins, tabId, tabAccessAllowlist };
+  } finally {
+    if (tabId !== null) {
+      state.dependencyDiscoveryTabs.delete(tabId);
+    }
+  }
+}
+
 async function handleNativeRequest(message) {
   switch (message.action) {
     case "ping":
@@ -2332,6 +2467,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({
             ok: true,
             tabAccessAllowlist: await saveTabAccessAllowlist(message.entries)
+          });
+          return;
+        case "discover-tab-dependencies":
+          sendResponse({
+            ok: true,
+            ...await discoverTabDependencyOrigins(message.url, message.groupKey)
           });
           return;
         case "set-yolo-mode":
