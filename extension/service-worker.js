@@ -2562,6 +2562,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             )
           });
           return;
+        case "add-active-tab-to-yolo-group": {
+          if (!state.yoloModeEnabled) {
+            throw createError(-32000, "YOLO mode is not enabled");
+          }
+          const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          if (!tab || typeof tab.id !== "number") {
+            throw createError(-32000, "Could not find the active tab");
+          }
+          if (!(await addTabToGatedGroup(tab.id))) {
+            throw createError(-32000, "Could not add the active tab to the YOLO group");
+          }
+          const attachment = await ensureDebuggerAttached(tab.id, "group-gate");
+          attachment.extensionHeld = true;
+          await policeGatedTabUrl(tab.id, tab.url);
+          sendResponse({ ok: true, tabId: tab.id });
+          return;
+        }
         case "set-yolo-mode":
           state.yoloModeEnabled = message.enabled === true;
           await chrome.storage.local.set({ [YOLO_MODE_STORAGE_KEY]: state.yoloModeEnabled });

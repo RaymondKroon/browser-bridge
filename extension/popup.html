@@ -29,6 +29,7 @@
           <span>YOLO mode <small>Allows all tabs and requests; shows a purple Y badge and uses a YOLO tab group</small></span>
           <input id="yolo-mode" type="checkbox">
         </label>
+        <button id="add-active-tab-yolo-button" type="button" class="secondary" hidden>Add active tab to YOLO group</button>
         <section class="field stack" aria-label="Tab access allowlist">
           <span>Tab access (URL prefix allowlist)</span>
           <span class="tab-access-hint">Prefixes match everything below them. * in a domain matches subdomains (https://*.example.com). Drag group or entry handles to reorder. Add a URL to multiple groups to manage dependencies separately; access is allowed if any copy is enabled. “Deps” reloads the active tab when its URL matches the first entry prefix, capturing blocked requests; otherwise it opens that entry in a visible gated tab. It adds uncovered external origins and same-origin paths.</span>

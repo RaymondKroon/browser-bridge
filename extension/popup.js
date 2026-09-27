@@ -636,6 +636,7 @@ async function refresh() {
   updateAllowedIds(response.state.developmentReloadAllowedIds);
   updateTabAccess(response.state.tabAccessAllowlist);
   document.getElementById("yolo-mode").checked = response.state.yoloModeEnabled === true;
+  document.getElementById("add-active-tab-yolo-button").hidden = response.state.yoloModeEnabled !== true;
   updateBlockedRequests(response.state.blockedRequests);
   updateConnectionButton(response.state);
 }
@@ -712,6 +713,23 @@ async function addActiveTabToNewGroup() {
   }
 }
 
+async function addActiveTabToYoloGroup() {
+  const button = document.getElementById("add-active-tab-yolo-button");
+  button.disabled = true;
+  button.title = "Adding the active tab to the YOLO group";
+  try {
+    const response = await send("add-active-tab-to-yolo-group");
+    if (!response.ok) {
+      throw new Error(response.error?.message ?? "Could not add the active tab to the YOLO group");
+    }
+    button.title = "Active tab added to the YOLO group";
+  } catch (error) {
+    button.title = error.message ?? "Could not add the active tab to the YOLO group";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function savePort() {
   const button = document.getElementById("save-port-button");
   const port = document.getElementById("bridge-port").value;
@@ -745,6 +763,9 @@ document.getElementById("add-tab-access-button").addEventListener("click", () =>
 });
 document.getElementById("add-active-tab-group-button").addEventListener("click", () => {
   void addActiveTabToNewGroup();
+});
+document.getElementById("add-active-tab-yolo-button").addEventListener("click", () => {
+  void addActiveTabToYoloGroup();
 });
 document.getElementById("clear-blocked-requests-button").addEventListener("click", () => {
   void clearBlockedRequests();
