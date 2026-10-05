@@ -936,7 +936,7 @@ test("service worker sends only the fixed development reload message to Helpers"
   assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
     {
       extensionId: "hacmcjjofinfaaahgdhopnnnipgjigge",
-      message: { type: "cdt-bridge.dev-reload.v1" }
+      message: { type: "browser-bridge.dev-reload.v1" }
     }
   ]);
   await assert.rejects(
@@ -1538,7 +1538,7 @@ test("service worker shows an in-page banner when subresources are blocked", asy
   const bannerCommands = sentCommands.filter(
     ({ method, params }) =>
       method === "Runtime.evaluate" &&
-      /cdt-bridge-blocked-subresources/.test(params?.expression ?? "")
+      /browser-bridge-blocked-subresources/.test(params?.expression ?? "")
   );
   assert.equal(bannerCommands.length, 2);
   for (const { debuggee } of bannerCommands) {
@@ -1987,12 +1987,12 @@ test("ungroupable gated tabs fall back to the gated favicon and ungate restores 
     ({ method, params }) =>
       method === "Page.addScriptToEvaluateOnNewDocument" &&
       typeof params?.source === "string" &&
-      params.source.includes("data-cdt-gated-icon")
+      params.source.includes("data-browser-bridge-gated-icon")
   );
   assert.ok(installs.length >= 1, "install script registered for new documents");
   // ...and injected into the current document.
   const isInstallScript = (value) =>
-    typeof value === "string" && value.includes("data-cdt-gated-icon") && value.includes("MutationObserver");
+    typeof value === "string" && value.includes("data-browser-bridge-gated-icon") && value.includes("MutationObserver");
   const currentDocEvals = sentCommands.filter(
     ({ method, params }) => method === "Runtime.evaluate" && isInstallScript(params?.expression)
   );
@@ -2023,7 +2023,7 @@ test("ungroupable gated tabs fall back to the gated favicon and ungate restores 
     ({ method, params }) =>
       method === "Runtime.evaluate" &&
       typeof params?.expression === "string" &&
-      params.expression.includes("delete window.__cdtBridgeGatedIcon")
+      params.expression.includes("delete window.__browserBridgeGatedIcon")
   );
   assert.ok(restores.length >= 1, "restore script evaluated on ungate");
 });
@@ -2227,7 +2227,7 @@ test("service worker reloads itself on its own development reload message", asyn
   const harness = await loadServiceWorkerHarness();
   const response = await new Promise((resolve) => {
     harness.listeners.runtimeExternal[0](
-      { type: "cdt-bridge.dev-reload.v1" },
+      { type: "browser-bridge.dev-reload.v1" },
       { id: "kbnaphbhjlbdmpekigjhfgogcimcpamf" },
       resolve
     );
@@ -2243,7 +2243,7 @@ test("service worker rejects development reload messages from other senders or t
   const handler = harness.listeners.runtimeExternal[0];
   const unauthorized = await new Promise((resolve) => {
     handler(
-      { type: "cdt-bridge.dev-reload.v1" },
+      { type: "browser-bridge.dev-reload.v1" },
       { id: "hacmcjjofinfaaahgdhopnnnipgjigge" },
       resolve
     );

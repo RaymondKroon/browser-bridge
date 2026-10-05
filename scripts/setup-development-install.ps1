@@ -38,6 +38,6 @@ if (-not (Test-Path $configPath)) {
     Write-Output "Using existing local development reload configuration: $configPath"
 }
 
-Write-Output "CDT Bridge development extension ID: $extensionId"
+Write-Output "Browser Bridge development extension ID: $extensionId"
 Write-Output "Load or reload this unpacked extension in chrome://extensions:"
 Write-Output "  $(Join-Path $repoRoot 'extension')"

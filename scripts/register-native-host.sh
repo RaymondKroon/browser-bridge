@@ -69,8 +69,8 @@ fi
 manifest_json() {
   cat <<EOF
 {
-  "name": "com.cdt_bridge",
-  "description": "CDT Bridge Native Messaging Host",
+  "name": "com.browser_bridge",
+  "description": "Browser Bridge Native Messaging Host",
   "path": "${launcher_path}",
   "type": "stdio",
   "allowed_origins": [
@@ -82,7 +82,7 @@ EOF
 
 register_manifest() {
   local manifest_dir="$1"
-  local manifest_path="${manifest_dir}/com.cdt_bridge.json"
+  local manifest_path="${manifest_dir}/com.browser_bridge.json"
 
   mkdir -p "${manifest_dir}"
   manifest_json > "${manifest_path}"

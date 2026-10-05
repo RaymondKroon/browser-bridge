@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up the unpacked CDT Bridge development extension for this local browser profile.
+# Set up the unpacked Browser Bridge development extension for this local browser profile.
 set -euo pipefail
 
 usage() {
@@ -125,7 +125,7 @@ console.log(extensionId);
 NODE
 )"
 
-echo "CDT Bridge development extension ID: $extension_id"
+echo "Browser Bridge development extension ID: $extension_id"
 
 if [[ "$dry_run" == true ]]; then
   echo "Dry run: native host was not registered."

@@ -1,6 +1,6 @@
-# CDT Bridge — Spec
+# Browser Bridge — Spec
 
-Requirements, architecture, and quality bar for the CDT bridge. The README covers
+Requirements, architecture, and quality bar for Browser Bridge. The README covers
 install/usage; this file is the source of truth for what the system must do and how
 changes are verified.
 
@@ -119,8 +119,8 @@ evidence:
   `agent-created`, `ungate`). Records every extension-initiated debugger
   attach/unattach so gated tabs can be explained. Exposed via
   `getDiagnostics` and `GET /json/diagnostics`.
-- **Native host crash log** — JSON lines at `~/.cdt-bridge/native-host-crash.log`
-  (dir overridable via `CDT_BRIDGE_CRASH_LOG_DIR`; path reported in `bridgeStatus`
+- **Native host crash log** — JSON lines at `~/.browser-bridge/native-host-crash.log`
+  (dir overridable via `BROWSER_BRIDGE_CRASH_LOG_DIR`; path reported in `bridgeStatus`
   as `crashLogPath`; types: `boot`, `disconnect`, `uncaughtException`,
   `unhandledRejection`). Written synchronously so entries survive an immediate exit.
 

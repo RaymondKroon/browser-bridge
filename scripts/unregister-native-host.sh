@@ -38,7 +38,7 @@ esac
 
 unregister_manifest() {
   local manifest_dir="$1"
-  local manifest_path="${manifest_dir}/com.cdt_bridge.json"
+  local manifest_path="${manifest_dir}/com.browser_bridge.json"
 
   if [[ -f "${manifest_path}" ]]; then
     rm -f "${manifest_path}"

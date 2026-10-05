@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "CDT Bridge",
+  "name": "Browser Bridge",
   "version": "0.1.0",
-  "description": "Expose a curated CDP bridge for the current browser session through chrome.debugger and native messaging.",
+  "description": "Expose a curated CDP endpoint for the current browser session through chrome.debugger and native messaging.",
   "permissions": [
     "debugger",
     "tabs",
@@ -17,7 +17,7 @@
     "service_worker": "service-worker.js"
   },
   "action": {
-    "default_title": "CDT Bridge",
+    "default_title": "Browser Bridge",
     "default_popup": "popup.html"
   },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAutIc2HplZyDMTJO6HDwU/eAntH9+rMGeZUdQAl8W3pjemt205RtCpCZpuaf0enRtyTYAJtZo5zNLQDkrve3JxpdTEurBHcaLaApIywHQB/Oo8g3NufxbOYJjljZlpsxZBIcZnlHiYvyMDd7BfXX+cm4V+3avknOPNscXNodzcjSnZzKbo0/+qyhflnluHCl/z47aeIDJGOgxgWthz1XCM4uFfhH2nJ66efFsyBMtncyiZvijc7kCGQ2nA8RHzGfrgAFXGWT2gh2xLy4ETOwi5XG2Jas4GGij3CEsap01HdpM31y+OFKCUkFG9FbOKc18bItf/dIkVQRghnlGs3+llwIDAQAB"

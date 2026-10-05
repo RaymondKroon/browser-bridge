@@ -5,22 +5,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$manifestPath = Join-Path (Join-Path $env:LOCALAPPDATA "CDTBridge") "com.cdt_bridge.json"
+$manifestPath = Join-Path (Join-Path $env:LOCALAPPDATA "BrowserBridge") "com.browser_bridge.json"
 $registrations = @()
 $otherRegistrations = @()
 
 switch ($Browser) {
     "Chrome" {
-        $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.cdt_bridge"
-        $otherRegistrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.cdt_bridge"
+        $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.browser_bridge"
+        $otherRegistrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.browser_bridge"
     }
     "Edge" {
-        $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.cdt_bridge"
-        $otherRegistrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.cdt_bridge"
+        $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.browser_bridge"
+        $otherRegistrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.browser_bridge"
     }
     "Both" {
-        $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.cdt_bridge"
-        $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.cdt_bridge"
+        $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.browser_bridge"
+        $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.browser_bridge"
     }
 }
 

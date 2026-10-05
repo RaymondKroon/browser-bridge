@@ -1,0 +1,9 @@
+{
+  "name": "com.browser_bridge",
+  "description": "Browser Bridge Native Messaging Host",
+  "path": "C:\\path\\to\\browser-bridge\\native-host\\launch-host.cmd",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

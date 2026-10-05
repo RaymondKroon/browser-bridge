@@ -15,7 +15,7 @@ function readLogLines(logPath) {
 }
 
 test("crash logger appends JSON lines to the log file", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "cdt-crash-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "browser-bridge-crash-"));
   const logger = createCrashLogger(path.join(dir, "nested", "crash.log"));
 
   assert.equal(logger.append("boot", { pid: 123 }), true);
@@ -33,16 +33,16 @@ test("crash logger appends JSON lines to the log file", () => {
 test("crash logger resolves the default log path under the home directory", () => {
   const logPath = resolveCrashLogPath({});
   assert.equal(path.basename(logPath), "native-host-crash.log");
-  assert.equal(path.basename(path.dirname(logPath)), ".cdt-bridge");
+  assert.equal(path.basename(path.dirname(logPath)), ".browser-bridge");
 });
 
-test("crash logger honors the CDT_BRIDGE_CRASH_LOG_DIR override", () => {
-  const logPath = resolveCrashLogPath({ CDT_BRIDGE_CRASH_LOG_DIR: "/tmp/custom" });
+test("crash logger honors the BROWSER_BRIDGE_CRASH_LOG_DIR override", () => {
+  const logPath = resolveCrashLogPath({ BROWSER_BRIDGE_CRASH_LOG_DIR: "/tmp/custom" });
   assert.equal(logPath, path.join("/tmp/custom", "native-host-crash.log"));
 });
 
 test("crash logger captures uncaught exceptions before exiting", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "cdt-crash-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "browser-bridge-crash-"));
   const logPath = path.join(dir, "crash.log");
   const loggerPath = fileURLToPath(
     new URL("../src/native-host/crash-logger.js", import.meta.url)
@@ -68,7 +68,7 @@ test("crash logger captures uncaught exceptions before exiting", async () => {
 });
 
 test("crash logger serializes object rejection reasons", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "cdt-crash-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "browser-bridge-crash-"));
   const logPath = path.join(dir, "crash.log");
   const loggerPath = fileURLToPath(
     new URL("../src/native-host/crash-logger.js", import.meta.url)
@@ -95,7 +95,7 @@ test("crash logger serializes object rejection reasons", async () => {
 });
 
 test("crash logger captures unhandled rejections before exiting", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "cdt-crash-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "browser-bridge-crash-"));
   const logPath = path.join(dir, "crash.log");
   const loggerPath = fileURLToPath(
     new URL("../src/native-host/crash-logger.js", import.meta.url)

@@ -69,7 +69,7 @@ async function cleanupAgentBrowser(sessionName, env) {
 }
 
 async function withAgentBrowserEnv(run) {
-  const agentBrowserHome = await mkdtemp(path.join(tmpdir(), "cdt-agent-browser-"));
+  const agentBrowserHome = await mkdtemp(path.join(tmpdir(), "browser-bridge-agent-browser-"));
   const env = {
     AGENT_BROWSER_HOME: agentBrowserHome,
     AGENT_BROWSER_IDLE_TIMEOUT_MS: "100"
@@ -318,7 +318,7 @@ test("agent-browser can save a trace through the bridge", { timeout: 30000 }, as
     const transport = new FakeExtensionTransport();
     const bridge = new CdpBridgeServer({ transport, port: 0 });
     const sessionName = `bridge-trace-${Date.now()}`;
-    const traceDir = await mkdtemp(path.join(tmpdir(), "cdt-trace-output-"));
+    const traceDir = await mkdtemp(path.join(tmpdir(), "browser-bridge-trace-output-"));
     const tracePath = path.join(traceDir, "bridge-trace.zip");
     await bridge.start();
 
@@ -359,7 +359,7 @@ test("agent-browser can save a performance profile through the bridge", { timeou
     const transport = new FakeExtensionTransport();
     const bridge = new CdpBridgeServer({ transport, port: 0 });
     const sessionName = `bridge-profile-${Date.now()}`;
-    const profileDir = await mkdtemp(path.join(tmpdir(), "cdt-profile-output-"));
+    const profileDir = await mkdtemp(path.join(tmpdir(), "browser-bridge-profile-output-"));
     const profilePath = path.join(profileDir, "bridge.cpuprofile");
     await bridge.start();
 

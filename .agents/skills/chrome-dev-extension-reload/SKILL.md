@@ -59,7 +59,7 @@ Adapt this pattern to the project's style and configuration mechanism:
 
 ```js
 const DEV_RELOAD_CONTROLLER_ID = "CONTROLLER_EXTENSION_ID";
-const DEV_RELOAD_MESSAGE_TYPE = "cdt-bridge.dev-reload.v1";
+const DEV_RELOAD_MESSAGE_TYPE = "browser-bridge.dev-reload.v1";
 
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
   if (message?.type !== DEV_RELOAD_MESSAGE_TYPE) {
@@ -97,7 +97,7 @@ The controller sends one exact request:
 ```js
 const response = await chrome.runtime.sendMessage(
   targetExtensionId,
-  { type: "cdt-bridge.dev-reload.v1" }
+  { type: "browser-bridge.dev-reload.v1" }
 );
 
 if (!response?.ok) {

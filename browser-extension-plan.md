@@ -1,4 +1,4 @@
-# CDT extension plan
+# Browser extension plan
 
 ## Problem statement
 

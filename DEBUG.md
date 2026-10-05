@@ -1,11 +1,11 @@
-# Debugging CDT Bridge
+# Debugging Browser Bridge
 
 Use this guide to debug the extension, native host, and `agent-browser` flow in a fresh session.
 
 ## Quick facts
 
-- The extension connects to the native messaging host named `com.cdt_bridge`.
-- The Linux registration script writes `~/.config/<browser>/NativeMessagingHosts/com.cdt_bridge.json`.
+- The extension connects to the native messaging host named `com.browser_bridge`.
+- The Linux registration script writes `~/.config/<browser>/NativeMessagingHosts/com.browser_bridge.json`.
 - The extension popup is the fastest health check:
   - **Native host** should show `Started`
   - **Bridge** should show `http://127.0.0.1:<port>`
@@ -54,7 +54,7 @@ Use `--browser all` if you want all supported browsers.
 ### Validate registration
 
 ```bash
-cat ~/.config/chromium/NativeMessagingHosts/com.cdt_bridge.json
+cat ~/.config/chromium/NativeMessagingHosts/com.browser_bridge.json
 ls -l native-host/launch-host.sh
 ```
 
@@ -62,7 +62,7 @@ The manifest should point at:
 
 ```json
 {
-  "name": "com.cdt_bridge",
+  "name": "com.browser_bridge",
   "type": "stdio"
 }
 ```
@@ -184,7 +184,7 @@ chromium-browser \
 For the real Fedora Chromium build used here, `--user-data-dir` also changed native-messaging manifest lookup. Registering only under `~/.config/chromium/NativeMessagingHosts` was **not enough**. Chromium only resolved the host after the manifest also existed at:
 
 ```bash
-<user-data-dir>/NativeMessagingHosts/com.cdt_bridge.json
+<user-data-dir>/NativeMessagingHosts/com.browser_bridge.json
 ```
 
 Example:
@@ -209,8 +209,8 @@ Then install the host manifest in **both** places before restarting Chromium:
 ```bash
 ./scripts/register-native-host.sh --extension-id <extension-id> --browser chromium
 mkdir -p "$PROFILE/NativeMessagingHosts"
-cp ~/.config/chromium/NativeMessagingHosts/com.cdt_bridge.json \
-  "$PROFILE/NativeMessagingHosts/com.cdt_bridge.json"
+cp ~/.config/chromium/NativeMessagingHosts/com.browser_bridge.json \
+  "$PROFILE/NativeMessagingHosts/com.browser_bridge.json"
 ```
 
 Then:
@@ -218,7 +218,7 @@ Then:
 1. launch Chromium with a remembered `PROFILE`
 2. find the unpacked extension ID from `chrome://extensions` or from `curl http://127.0.0.1:9224/json/list`
 3. register the native host for that ID
-4. copy the manifest into `$PROFILE/NativeMessagingHosts/com.cdt_bridge.json`
+4. copy the manifest into `$PROFILE/NativeMessagingHosts/com.browser_bridge.json`
 5. restart Chromium with the same `PROFILE`
 6. open the popup and confirm the bridge is already started
 7. run `agent-browser --session real-chromium --cdp <bridge-port> open chrome://extensions`
@@ -261,7 +261,7 @@ Useful targets to look for:
 | Symptom | Likely cause | Check |
 | --- | --- | --- |
 | `Specified native messaging host not found.` | Chromium cannot resolve the manifest | manifest path, `allowed_origins`, restart browser |
-| `Specified native messaging host not found.` while using `--user-data-dir` | Chromium is reading manifests from the profile-specific `NativeMessagingHosts` directory | copy `com.cdt_bridge.json` into `<user-data-dir>/NativeMessagingHosts/` and restart |
+| `Specified native messaging host not found.` while using `--user-data-dir` | Chromium is reading manifests from the profile-specific `NativeMessagingHosts` directory | copy `com.browser_bridge.json` into `<user-data-dir>/NativeMessagingHosts/` and restart |
 | `CDP error (Page.navigate): Native messaging input ended` | browser-side disconnect during internal-page flow | reload extension, restart browser, retest `open chrome://extensions` |
 | Host crashes with `EPIPE` | native-messaging pipe broke during cleanup | verify latest `src/native-host/native-messaging-transport.js` is loaded |
 | `agent-browser` hangs | stale daemon files or missing synthetic load events | run repair script, confirm latest extension is loaded |
@@ -342,7 +342,7 @@ tab makes the attach fail.
   is port-forwarded. A "not listening" drop can therefore be the bridge dying OR the
   **port-forward** dropping (Windows sleep, network blip) — not distinguishable from
   the agent side alone.
-- Sync is via **GitHub** (`origin` = `git@github.com:RaymondKroon/cdt-bridge.git`):
+- Sync is via **GitHub** (`origin` points to the project repository):
   push on Linux → `git pull` on Windows → reload the unpacked extension.
 - A background health monitor was used: `/tmp/bridge-monitor.sh` polling
   `http://127.0.0.1:9222/healthz` every 1s, logging UP/DOWN transitions with
@@ -361,7 +361,7 @@ Crash-capture logging is implemented (see SPEC.md and section 14):
 2. Exposed via `getDiagnostics` (so popup state includes it) and the bridge HTTP
    endpoint `GET /json/diagnostics`.
 3. Native host: `uncaughtException` + `unhandledRejection` → append JSON lines to
-   `~/.cdt-bridge/native-host-crash.log` (override dir with `CDT_BRIDGE_CRASH_LOG_DIR`);
+   `~/.browser-bridge/native-host-crash.log` (override dir with `BROWSER_BRIDGE_CRASH_LOG_DIR`);
    `boot` and `disconnect` (with reason) entries are also written. The log path is
    included in the `bridgeStatus` event as `crashLogPath`.
 
@@ -375,7 +375,7 @@ When the bridge drops again, read these two sources:
    (with `stopping` + `lastError`), `unhandledrejection`, `error`. If the SW died
    from an unhandled rejection, the entry is written just before the worker dies.
 2. **Native host crash log** — on the Windows machine:
-   `%USERPROFILE%\.cdt-bridge\native-host-crash.log` (JSON lines). Types: `boot`
+   `%USERPROFILE%\.browser-bridge\native-host-crash.log` (JSON lines). Types: `boot`
    (with `pid` + `bridgePort`), `disconnect` (with `reason`), `uncaughtException`,
    `unhandledRejection`. The exact path is in the popup's bridge status as
    `crashLogPath`.
@@ -391,7 +391,7 @@ Interpretation guide:
 ## 15. Crash-log anatomy of the 2026-09-11 drops (reference)
 
 SW log (`/json/diagnostics` → `crashLog`) and host log
-(`C:\Users\KroonRaymond\.cdt-bridge\native-host-crash.log`) agreed:
+(`C:\Users\KroonRaymond\.browser-bridge\native-host-crash.log`) agreed:
 
 - host: `unhandledRejection { message: "[object Object]", stack: null }` at 22:34:39
   and 22:35:00 → process exit

@@ -113,7 +113,7 @@ export async function runNativeHost() {
   const tHello = Date.now();
   const preferredPort = parsePreferredPort(
     hello?.bridgePort,
-    parsePreferredPort(process.env.CDT_BRIDGE_PORT)
+    parsePreferredPort(process.env.BROWSER_BRIDGE_PORT)
   );
   const bridge = await startBridgeServer({ transport, preferredPort });
   const tBridge = Date.now();

@@ -1,6 +1,6 @@
-# CDT bridge
+# Browser Bridge
 
-Proof of concept for reusing an already-running Chrome, Chromium, or Edge session through an MV3 extension, a native messaging host, and a local CDP-compatible bridge that `agent-browser` can connect to.
+Browser Bridge reuses an already-running Chrome, Chromium, or Edge session through an MV3 extension, a native messaging host, and a local CDP-compatible endpoint that `agent-browser` can connect to.
 
 ## What ships
 
@@ -72,7 +72,7 @@ Unsupported methods return a structured JSON-RPC/CDP-style error with code `-326
 
 ### Development extension reload
 
-The popup’s **Allowed reload IDs** list is stored in `chrome.storage.local` for this CDT Bridge installation. Helpers (`hacmcjjofinfaaahgdhopnnnipgjigge`) is the initial development entry; add other cooperating development-extension IDs in the popup and click **Save allowed IDs**. CDT Bridge sends only `{ "type": "cdt-bridge.dev-reload.v1" }`. When `native-host/development-reload.config.json` exists, the native host additionally binds a separate authenticated control endpoint only to `127.0.0.1`:
+The popup’s **Allowed reload IDs** list is stored in `chrome.storage.local` for this Browser Bridge installation. Helpers (`hacmcjjofinfaaahgdhopnnnipgjigge`) is the initial development entry; add other cooperating development-extension IDs in the popup and click **Save allowed IDs**. Browser Bridge sends only `{ "type": "browser-bridge.dev-reload.v1" }`. When `native-host/development-reload.config.json` exists, the native host additionally binds a separate authenticated control endpoint only to `127.0.0.1`:
 
 ```powershell
 Invoke-RestMethod -Method Post `
@@ -81,7 +81,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"extensionId":"hacmcjjofinfaaahgdhopnnnipgjigge"}'
 ```
 
-The JSON payload must contain exactly one field, `extensionId`. CDT Bridge accepts only IDs in the popup-managed allowed-ID list; another ID is rejected by the controller before any external message is sent. The endpoint accepts no message type or other command. Its `{ "ok": true }` response means the target acknowledged and scheduled reload; inspect Chrome for any subsequent extension load error. The endpoint is disabled when that configuration file is absent. Set `requireToken` to `true` and add a high-entropy `token` in the ignored configuration only when local-process authentication is desired.
+The JSON payload must contain exactly one field, `extensionId`. Browser Bridge accepts only IDs in the popup-managed allowed-ID list; another ID is rejected by the controller before any external message is sent. The endpoint accepts no message type or other command. Its `{ "ok": true }` response means the target acknowledged and scheduled reload; inspect Chrome for any subsequent extension load error. The endpoint is disabled when that configuration file is absent. Set `requireToken` to `true` and add a high-entropy `token` in the ignored configuration only when local-process authentication is desired.
 
    The bridge uses port `9222` by default. You can change it from the popup, and the extension persists that setting across browser restarts. If the configured port is busy, the native host falls back to a free local port.
 

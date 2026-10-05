@@ -9,8 +9,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$manifestDir = Join-Path $env:LOCALAPPDATA "CDTBridge"
-$manifestPath = Join-Path $manifestDir "com.cdt_bridge.json"
+$manifestDir = Join-Path $env:LOCALAPPDATA "BrowserBridge"
+$manifestPath = Join-Path $manifestDir "com.browser_bridge.json"
 $launcherPath = Join-Path $repoRoot "native-host\launch-host.cmd"
 
 if (-not (Test-Path $launcherPath)) {
@@ -20,8 +20,8 @@ if (-not (Test-Path $launcherPath)) {
 New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
 
 $manifest = [ordered]@{
-    name = "com.cdt_bridge"
-    description = "CDT Bridge Native Messaging Host"
+    name = "com.browser_bridge"
+    description = "Browser Bridge Native Messaging Host"
     path = $launcherPath
     type = "stdio"
     allowed_origins = @("chrome-extension://$ExtensionId/")
@@ -31,11 +31,11 @@ $manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding ASCII -Path $manifes
 
 $registrations = @()
 switch ($Browser) {
-    "Chrome" { $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.cdt_bridge" }
-    "Edge" { $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.cdt_bridge" }
+    "Chrome" { $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.browser_bridge" }
+    "Edge" { $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.browser_bridge" }
     "Both" {
-        $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.cdt_bridge"
-        $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.cdt_bridge"
+        $registrations += "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.browser_bridge"
+        $registrations += "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.browser_bridge"
     }
 }
 

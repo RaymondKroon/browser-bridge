@@ -10,8 +10,8 @@ const TAB_ACCESS_GROUP_NAMES_KEY = "tabAccessGroupNames";
 let tabAccessGroupNames = {};
 const TAB_ACCESS_GROUP_ORDER_KEY = "tabAccessGroupOrder";
 let tabAccessGroupOrder = [];
-const TAB_ACCESS_ENTRY_DRAG_TYPE = "application/x-cdt-tab-access-entry";
-const TAB_ACCESS_GROUP_DRAG_TYPE = "application/x-cdt-tab-access-group";
+const TAB_ACCESS_ENTRY_DRAG_TYPE = "application/x-browser-bridge-tab-access-entry";
+const TAB_ACCESS_GROUP_DRAG_TYPE = "application/x-browser-bridge-tab-access-group";
 
 async function send(action, extra = {}) {
   return chrome.runtime.sendMessage({ action, ...extra });

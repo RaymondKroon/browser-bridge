@@ -166,9 +166,9 @@ export class CdpBridgeServer {
   async getVersionPayload() {
     const diagnostics = await this.getDiagnostics();
     return {
-      Browser: diagnostics?.browserVersion ?? "CDT Extension Bridge/0.1.0",
+      Browser: diagnostics?.browserVersion ?? "Browser Bridge/0.1.0",
       "Protocol-Version": BRIDGE_PROTOCOL_VERSION,
-      "User-Agent": diagnostics?.userAgent ?? "CDT Extension Bridge",
+      "User-Agent": diagnostics?.userAgent ?? "Browser Bridge",
       "V8-Version": diagnostics?.jsVersion ?? process.versions.v8,
       "WebKit-Version": diagnostics?.webKitVersion ?? "537.36",
       webSocketDebuggerUrl: this.browserWebSocketUrl
@@ -484,7 +484,7 @@ export class CdpBridgeServer {
           protocolVersion: BRIDGE_PROTOCOL_VERSION,
           product: diagnostics?.browserVersion ?? "Chrome/0.0.0.0",
           revision: "extension-bridge",
-          userAgent: diagnostics?.userAgent ?? "CDT Extension Bridge",
+          userAgent: diagnostics?.userAgent ?? "Browser Bridge",
           jsVersion: diagnostics?.jsVersion ?? process.versions.v8
         };
       }

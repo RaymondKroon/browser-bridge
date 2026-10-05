@@ -19,7 +19,7 @@ function describeReason(reason) {
 }
 
 export function resolveCrashLogPath(env = process.env) {
-  const base = env.CDT_BRIDGE_CRASH_LOG_DIR ?? path.join(homedir(), ".cdt-bridge");
+  const base = env.BROWSER_BRIDGE_CRASH_LOG_DIR ?? path.join(homedir(), ".browser-bridge");
   return path.join(base, "native-host-crash.log");
 }
 

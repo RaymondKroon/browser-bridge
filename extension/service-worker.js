@@ -1,10 +1,10 @@
-const HOST_NAME = "com.cdt_bridge";
+const HOST_NAME = "com.browser_bridge";
 const DEBUGGER_VERSION = "1.3";
 const DEV_RELOAD_ALLOWED_IDS_STORAGE_KEY = "developmentReloadAllowedIds";
 const DEFAULT_DEV_RELOAD_ALLOWED_IDS = Object.freeze([
   "hacmcjjofinfaaahgdhopnnnipgjigge"
 ]);
-const DEV_RELOAD_MESSAGE_TYPE = "cdt-bridge.dev-reload.v1";
+const DEV_RELOAD_MESSAGE_TYPE = "browser-bridge.dev-reload.v1";
 const SUPPORTED_METHODS = new Set([
   "Browser.getWindowForTarget",
   "Browser.grantPermissions",
@@ -484,7 +484,7 @@ async function assertTabAccessAllowed(url) {
   await autoAddBlockedTabUrl(url);
   throw createError(
     TAB_ACCESS_BLOCKED_CODE,
-    `Tab access blocked: "${url}" is not on the allowlist. Approve this URL manually in the CDT Bridge popup before retrying.`,
+    `Tab access blocked: "${url}" is not on the allowlist. Approve this URL manually in the Browser Bridge popup before retrying.`,
     { url, reason: "not-allowlisted" }
   );
 }
@@ -595,7 +595,7 @@ async function policeSpawnedTabUrl(tabId, url) {
   }
 }
 
-const BLOCKED_SUBRESOURCE_BANNER_ID = "cdt-bridge-blocked-subresources";
+const BLOCKED_SUBRESOURCE_BANNER_ID = "browser-bridge-blocked-subresources";
 
 // Self-contained, idempotent page script: keeps a per-document list of
 // subresources the Fetch gate blocked and renders/updates a fixed banner.
@@ -605,20 +605,20 @@ function blockedSubresourceIndicatorScript(url, resourceType) {
     try {
       const url = ${JSON.stringify(url)};
       const resourceType = ${JSON.stringify(resourceType)};
-      if (!Array.isArray(window.__cdtBridgeBlockedSubresources)) {
-        window.__cdtBridgeBlockedSubresources = [];
+      if (!Array.isArray(window.__browserBridgeBlockedSubresources)) {
+        window.__browserBridgeBlockedSubresources = [];
       }
-      const entries = window.__cdtBridgeBlockedSubresources;
+      const entries = window.__browserBridgeBlockedSubresources;
       let entry = entries.find((item) => item.url === url);
       if (!entry) {
         entry = { url, resourceType, count: 0 };
         entries.push(entry);
       }
       entry.count += 1;
-      if (window.__cdtBridgeBannerCollapsed === undefined) {
-        window.__cdtBridgeBannerCollapsed = true; // start collapsed
+      if (window.__browserBridgeBannerCollapsed === undefined) {
+        window.__browserBridgeBannerCollapsed = true; // start collapsed
       }
-      const collapsed = window.__cdtBridgeBannerCollapsed;
+      const collapsed = window.__browserBridgeBannerCollapsed;
       let banner = document.getElementById(${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)});
       if (!banner) {
         banner = document.createElement("div");
@@ -633,14 +633,14 @@ function blockedSubresourceIndicatorScript(url, resourceType) {
       toggle.style.flex = "none";
       toggle.textContent = collapsed ? "\u25B8" : "\u25BE";
       const title = document.createElement("span");
-      title.textContent = "CDT Bridge blocked " + entries.length + " subresource" + (entries.length === 1 ? "" : "s") + " on this page";
+      title.textContent = "Browser Bridge blocked " + entries.length + " subresource" + (entries.length === 1 ? "" : "s") + " on this page";
       header.appendChild(toggle);
       header.appendChild(title);
       header.addEventListener("click", () => {
-        window.__cdtBridgeBannerCollapsed = !window.__cdtBridgeBannerCollapsed;
+        window.__browserBridgeBannerCollapsed = !window.__browserBridgeBannerCollapsed;
         const body = document.getElementById(${JSON.stringify(BLOCKED_SUBRESOURCE_BANNER_ID)} + "-body");
-        if (body) body.style.display = window.__cdtBridgeBannerCollapsed ? "none" : "";
-        toggle.textContent = window.__cdtBridgeBannerCollapsed ? "\u25B8" : "\u25BE";
+        if (body) body.style.display = window.__browserBridgeBannerCollapsed ? "none" : "";
+        toggle.textContent = window.__browserBridgeBannerCollapsed ? "\u25B8" : "\u25BE";
       });
       banner.appendChild(header);
       const body = document.createElement("div");
@@ -696,7 +696,7 @@ async function handleFetchRequestPaused(source, params) {
     typeof url === "string" &&
     (isTabUrlAllowed(url) || isBrowserInternalUrl(url));
   if (!allowed) {
-    console.warn(`[cdt-bridge] fetch-gate: blocking ${resourceType} ${url} (tab ${source.tabId})`);
+    console.warn(`[browser-bridge] fetch-gate: blocking ${resourceType} ${url} (tab ${source.tabId})`);
     // Record every blocked request (not just navigations) so the popup can
     // show the user what the gate blocked and let them allow it.
     if (!discoveryRequests) {
@@ -814,8 +814,8 @@ async function updateActionState() {
     ? (state.yoloModeEnabled ? ACTION_COLORS.yolo : ACTION_COLORS.connected)
     : ACTION_COLORS.alert;
   const title = connected
-    ? `${state.yoloModeEnabled ? "YOLO mode enabled — all tabs allowed" : "CDT Bridge connected"} (${state.bridgeStatus?.httpBaseUrl ?? "local bridge"})`
-    : "CDT Bridge disconnected";
+    ? `${state.yoloModeEnabled ? "YOLO mode enabled — all tabs allowed" : "Browser Bridge connected"} (${state.bridgeStatus?.httpBaseUrl ?? "local bridge"})`
+    : "Browser Bridge disconnected";
 
   await Promise.all([
     chrome.action.setIcon({ imageData }),
@@ -1220,13 +1220,13 @@ const GATED_FAVICON_HREF =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23dc2626'/%3E%3Crect x='6' y='13' width='20' height='6' rx='2' fill='white'/%3E%3C/svg%3E";
 
 const GATED_FAVICON_INSTALL_SCRIPT = `(() => {
-  if (window.__cdtBridgeGatedIcon) return;
-  window.__cdtBridgeGatedIcon = true;
+  if (window.__browserBridgeGatedIcon) return;
+  window.__browserBridgeGatedIcon = true;
   const HREF = ${JSON.stringify(GATED_FAVICON_HREF)};
-  const ATTR = "data-cdt-gated-icon";
+  const ATTR = "data-browser-bridge-gated-icon";
   const saveOriginal = (link) => {
-    if (!window.__cdtBridgeGatedIconOriginal && link && link.href) {
-      window.__cdtBridgeGatedIconOriginal = link.href;
+    if (!window.__browserBridgeGatedIconOriginal && link && link.href) {
+      window.__browserBridgeGatedIconOriginal = link.href;
     }
   };
   const assertIcon = () => {
@@ -1272,17 +1272,17 @@ const GATED_FAVICON_INSTALL_SCRIPT = `(() => {
 
 const GATED_FAVICON_RESTORE_SCRIPT = `(() => {
   try {
-    const ours = document.querySelector("link[data-cdt-gated-icon]");
+    const ours = document.querySelector("link[data-browser-bridge-gated-icon]");
     if (ours) ours.remove();
-    const original = window.__cdtBridgeGatedIconOriginal;
+    const original = window.__browserBridgeGatedIconOriginal;
     if (original) {
       const link = document.createElement("link");
       link.rel = "icon";
       link.href = original;
       (document.head || document.documentElement).appendChild(link);
     }
-    delete window.__cdtBridgeGatedIcon;
-    delete window.__cdtBridgeGatedIconOriginal;
+    delete window.__browserBridgeGatedIcon;
+    delete window.__browserBridgeGatedIconOriginal;
   } catch {}
 })();`;
 
