@@ -46,10 +46,10 @@ pkill agent-browser
 ### Linux
 
 ```bash
-./scripts/register-native-host.sh --extension-id <extension-id> --browser chromium
+./scripts/register-native-host.sh --browser chromium
 ```
 
-Use `--browser all` if you want all supported browsers.
+The extension ID is derived from the `key` field in `extension/manifest.json`. Pass `--extension-id` to override or to register a different controller; a value that disagrees with the manifest is rejected. Use `--browser all` if you want all supported browsers.
 
 ### Validate registration
 
@@ -207,7 +207,7 @@ chromium-browser \
 Then install the host manifest in **both** places before restarting Chromium:
 
 ```bash
-./scripts/register-native-host.sh --extension-id <extension-id> --browser chromium
+./scripts/register-native-host.sh --browser chromium
 mkdir -p "$PROFILE/NativeMessagingHosts"
 cp ~/.config/chromium/NativeMessagingHosts/com.browser_bridge.json \
   "$PROFILE/NativeMessagingHosts/com.browser_bridge.json"

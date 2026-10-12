@@ -7,7 +7,7 @@ Browser Bridge reuses an already-running Chrome, Chromium, or Edge session throu
 1. `extension/` - unpacked MV3 extension with a service worker and popup UI.
 2. `native-host/` - native messaging entrypoint plus Windows and Linux launchers.
 3. `src/` - shared Node-side bridge and host implementation.
-4. `scripts/register-native-host.ps1`, `scripts/unregister-native-host.ps1`, `scripts/register-native-host.sh`, and `scripts/unregister-native-host.sh` - register or unregister the native host manifest on Windows and Linux.
+4. `scripts/register-native-host.ps1`, `scripts/unregister-native-host.ps1`, `scripts/register-native-host.sh`, and `scripts/unregister-native-host.sh` - register or unregister the native host manifest on Windows and Linux. The controller extension ID is derived from the `key` field in `extension/manifest.json` (see `scripts/compute-extension-id.mjs`); an explicitly passed ID that disagrees with the manifest is rejected.
 5. `test/` - protocol tests plus an `agent-browser` smoke test that runs against a fake extension transport.
 
 ## Supported v1 surface

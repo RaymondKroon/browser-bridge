@@ -26,6 +26,8 @@ Never implement a wildcard sender, a message that reloads on arbitrary input, or
 
 If the controller ID is unstable because the extension is unpacked, give the controller a stable development key in its manifest and document the resulting ID. Do not reuse a private production signing key for this purpose.
 
+The ID is deterministic: it is the first 16 bytes of SHA-256 of the DER-encoded public key from the manifest's `key` field, with each nibble mapped to `a`-`p`. Compute it from the manifest (a few lines of Node or .NET) instead of copying it from `chrome://extensions` — the visible ID belongs to whatever profile you are looking at, and copying it from the wrong profile is a common source of mismatched `allowed_origins` / `externally_connectable` entries. Registration scripts should derive the ID this way and reject an explicitly passed ID that disagrees with the manifest.
+
 ## Target-extension implementation
 
 ### 1. Locate the MV3 worker and manifest

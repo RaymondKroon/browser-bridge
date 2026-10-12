@@ -1,5 +1,4 @@
 param(
-    [Parameter(Mandatory = $true)]
     [string]$ExtensionId,
 
     [ValidateSet("Chrome", "Edge", "Both")]
@@ -15,6 +14,26 @@ $launcherPath = Join-Path $repoRoot "native-host\launch-host.cmd"
 
 if (-not (Test-Path $launcherPath)) {
     throw "Native host launcher not found at $launcherPath"
+}
+
+. (Join-Path $PSScriptRoot "Get-ExtensionId.ps1")
+
+$derivedId = Get-DerivedExtensionId -ManifestPath (Join-Path $repoRoot "extension\manifest.json")
+
+if ($ExtensionId) {
+    if ($ExtensionId -notmatch "^[a-p]{32}$") {
+        throw "Extension IDs should be 32 lowercase characters in the a-p range."
+    }
+    if ($derivedId -and $derivedId -ne $ExtensionId) {
+        throw "Extension ID mismatch: -ExtensionId is $ExtensionId, but extension\manifest.json derives to $derivedId. Check that you are registering the right extension."
+    }
+}
+elseif ($derivedId) {
+    $ExtensionId = $derivedId
+    Write-Output "Derived extension ID from manifest key: $ExtensionId"
+}
+else {
+    throw "extension\manifest.json has no stable 'key' field; -ExtensionId is required."
 }
 
 New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null

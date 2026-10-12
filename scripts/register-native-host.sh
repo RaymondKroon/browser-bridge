@@ -3,7 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/register-native-host.sh --extension-id <extension-id> [--browser <chrome|chromium|edge|all>]
+Usage: ./scripts/register-native-host.sh [--extension-id <extension-id>] [--browser <chrome|chromium|edge|all>]
+
+If --extension-id is omitted, it is derived from the "key" field in
+extension/manifest.json. If provided, it is checked against the derived ID
+and a mismatch is an error.
 EOF
 }
 
@@ -32,14 +36,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${extension_id}" ]]; then
-  echo "--extension-id is required." >&2
-  usage >&2
-  exit 1
-fi
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "${script_dir}/.." && pwd)"
+launcher_path="${repo_root}/native-host/launch-host.sh"
 
-if [[ ! "${extension_id}" =~ ^[a-p]{32}$ ]]; then
-  echo "Extension IDs should be 32 lowercase characters in the a-p range." >&2
+if [[ ! -x "${launcher_path}" ]]; then
+  echo "Native host launcher is missing or not executable: ${launcher_path}" >&2
   exit 1
 fi
 
@@ -57,12 +59,30 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "${script_dir}/.." && pwd)"
-launcher_path="${repo_root}/native-host/launch-host.sh"
+compute_extension_id() {
+  # Empty output means the manifest has no stable key; the ID cannot be
+  # derived, so an explicit --extension-id is required in that case.
+  node "${script_dir}/compute-extension-id.mjs" "${repo_root}/extension/manifest.json" 2>/dev/null || true
+}
 
-if [[ ! -x "${launcher_path}" ]]; then
-  echo "Native host launcher is missing or not executable: ${launcher_path}" >&2
+derived_id="$(compute_extension_id)"
+
+if [[ -n "${extension_id}" ]]; then
+  if [[ ! "${extension_id}" =~ ^[a-p]{32}$ ]]; then
+    echo "Extension IDs should be 32 lowercase characters in the a-p range." >&2
+    exit 1
+  fi
+  if [[ -n "${derived_id}" && "${derived_id}" != "${extension_id}" ]]; then
+    echo "Extension ID mismatch: --extension-id is ${extension_id}, but extension/manifest.json derives to ${derived_id}." >&2
+    echo "Check that you are registering the right extension, or pass the ID of the loaded extension deliberately." >&2
+    exit 1
+  fi
+elif [[ -n "${derived_id}" ]]; then
+  extension_id="${derived_id}"
+  echo "Derived extension ID from manifest key: ${extension_id}"
+else
+  echo "extension/manifest.json has no stable \"key\" field; --extension-id is required." >&2
+  usage >&2
   exit 1
 fi
 

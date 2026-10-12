@@ -12,19 +12,14 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $manifestPath = Join-Path $repoRoot "extension\manifest.json"
 $configPath = Join-Path $repoRoot "native-host\development-reload.config.json"
 
+. (Join-Path $PSScriptRoot "Get-ExtensionId.ps1")
+
 $manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($manifest.key)) {
     throw "extension/manifest.json does not contain the development public key"
 }
 
-$publicKey = [Convert]::FromBase64String($manifest.key)
-$hash = [Security.Cryptography.SHA256]::Create().ComputeHash($publicKey)
-$extensionId = -join ($hash[0..15] | ForEach-Object {
-    $high = ($_ -shr 4) -band 0x0f
-    $low = $_ -band 0x0f
-    [char](97 + $high)
-    [char](97 + $low)
-})
+$extensionId = Get-DerivedExtensionId -ManifestPath $manifestPath
 
 & (Join-Path $PSScriptRoot "register-native-host.ps1") -ExtensionId $extensionId -Browser $Browser
 

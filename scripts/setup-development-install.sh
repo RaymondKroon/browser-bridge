@@ -104,26 +104,7 @@ NODE
   echo "Created local development key at $key_path and updated extension/manifest.json."
 fi
 
-extension_id="$(MANIFEST_PATH="$manifest_path" node --input-type=module <<'NODE'
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-
-const manifest = JSON.parse(await readFile(process.env.MANIFEST_PATH, "utf8"));
-if (typeof manifest.key !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(manifest.key)) {
-  throw new Error("extension/manifest.json must contain a base64-encoded development public key");
-}
-const publicKey = Buffer.from(manifest.key, "base64");
-if (publicKey.length === 0) {
-  throw new Error("extension/manifest.json contains an empty development public key");
-}
-const extensionId = createHash("sha256")
-  .update(publicKey)
-  .digest("hex")
-  .slice(0, 32)
-  .replace(/[0-9a-f]/g, (digit) => String.fromCharCode("a".charCodeAt(0) + Number.parseInt(digit, 16)));
-console.log(extensionId);
-NODE
-)"
+extension_id="$(node "${script_dir}/compute-extension-id.mjs" "${manifest_path}")"
 
 echo "Browser Bridge development extension ID: $extension_id"
 
