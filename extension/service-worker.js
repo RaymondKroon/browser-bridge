@@ -2015,9 +2015,19 @@ async function reloadDevelopmentExtension(payload) {
     throw createError(-32602, "reloadDevelopmentExtension requires an allowlisted development extension ID");
   }
 
-  const response = await chrome.runtime.sendMessage(payload.extensionId, {
-    type: DEV_RELOAD_MESSAGE_TYPE
-  });
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage(payload.extensionId, {
+      type: DEV_RELOAD_MESSAGE_TYPE
+    });
+  } catch (error) {
+    // Chrome rejects when the target has no external-message receiving end
+    // (missing handler, no externally_connectable entry, or not loaded).
+    throw createError(
+      -32603,
+      `Development reload target ${payload.extensionId} did not respond: ${error?.message ?? error}`
+    );
+  }
   if (!response?.ok) {
     throw createError(-32603, response?.error ?? "Target did not acknowledge the development reload");
   }

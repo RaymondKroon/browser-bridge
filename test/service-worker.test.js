@@ -948,6 +948,27 @@ test("service worker sends only the fixed development reload message to Helpers"
   );
 });
 
+test("service worker reports which development reload target did not respond", async () => {
+  const harness = await loadServiceWorkerHarness({
+    runtimeSendMessage: async () => {
+      throw new Error("Could not establish connection. Receiving end does not exist.");
+    }
+  });
+
+  await assert.rejects(
+    harness.handleNativeRequest({
+      action: "reloadDevelopmentExtension",
+      payload: { extensionId: "hacmcjjofinfaaahgdhopnnnipgjigge" }
+    }),
+    (error) => {
+      assert.equal(error.code, -32603);
+      assert.match(error.message, /Development reload target hacmcjjofinfaaahgdhopnnnipgjigge did not respond/);
+      assert.match(error.message, /Receiving end does not exist/);
+      return true;
+    }
+  );
+});
+
 test("service worker blocks commands for non-allowlisted tabs and auto-adds the URL disabled", async () => {
   const harness = await loadServiceWorkerHarness({
     tab: { id: 41, url: "https://blocked.example/page", title: "Blocked" }

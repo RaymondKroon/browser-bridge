@@ -102,6 +102,72 @@ test("development reload server defaults to unauthenticated loopback requests", 
   }
 });
 
+test("development reload server propagates controller failures without masking their reason", async () => {
+  const server = new DevelopmentReloadServer({
+    config: { port: 0, requireToken: false },
+    transport: {
+      async request() {
+        throw {
+          code: -32603,
+          message: "Could not establish connection. Receiving end does not exist."
+        };
+      }
+    },
+    logger: { warn() {} }
+  });
+  await server.start();
+  const port = server.server.address().port;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/development/reload`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"extensionId":"hacmcjjofinfaaahgdhopnnnipgjigge"}'
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "Could not establish connection. Receiving end does not exist."
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+test("development reload server keeps body validation errors generic", async () => {
+  let requested = false;
+  const server = new DevelopmentReloadServer({
+    config: { port: 0, requireToken: false },
+    transport: {
+      async request() {
+        requested = true;
+        return { ok: true };
+      }
+    },
+    logger: { warn() {} }
+  });
+  await server.start();
+  const port = server.server.address().port;
+  try {
+    const invalidJson = await fetch(`http://127.0.0.1:${port}/development/reload`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"extensionId":'
+    });
+    assert.equal(invalidJson.status, 400);
+    assert.deepEqual(await invalidJson.json(), { ok: false, error: "Invalid development reload request" });
+
+    const oversized = await fetch(`http://127.0.0.1:${port}/development/reload`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: `"${"a".repeat(2048)}"`
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal(requested, false);
+  } finally {
+    await server.stop();
+  }
+});
+
 import http from "node:http";
 
 async function listenOnFreePort() {

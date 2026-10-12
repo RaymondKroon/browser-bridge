@@ -130,6 +130,7 @@ export class DevelopmentReloadServer {
   }
 
   async handleRequest(request, response) {
+    let payload;
     try {
       const url = new URL(request.url, "http://127.0.0.1");
       if (
@@ -152,13 +153,24 @@ export class DevelopmentReloadServer {
         }
       }
 
-      const payload = await readJsonBody(request);
-      const result = await this.transport.request("reloadDevelopmentExtension", payload);
-      writeJson(response, 200, result);
+      payload = await readJsonBody(request);
     } catch (error) {
       const statusCode = error?.message === "Request body is too large" ? 413 : 400;
       this.logger.warn?.(`Development reload request rejected: ${error?.message ?? error}`);
       writeJson(response, statusCode, { ok: false, error: "Invalid development reload request" });
+      return;
+    }
+
+    try {
+      const result = await this.transport.request("reloadDevelopmentExtension", payload);
+      writeJson(response, 200, result);
+    } catch (error) {
+      // The request itself was valid; the controller or target extension
+      // rejected it. Surface the underlying reason (it originates from our
+      // own controller extension) instead of a generic message.
+      const message = error?.message ?? String(error);
+      this.logger.warn?.(`Development reload request failed: ${message}`);
+      writeJson(response, 502, { ok: false, error: message });
     }
   }
 }
